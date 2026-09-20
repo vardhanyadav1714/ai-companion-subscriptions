@@ -26,7 +26,7 @@ const envSchema = z.object({
 
   PLAN_ID: z.string().trim().min(1).default("eva_premium_monthly"),
   PLAN_NAME: z.string().trim().min(1).default("Eva Premium Monthly"),
-  PLAN_AMOUNT: z.coerce.number().int().positive().default(29900),
+  PLAN_AMOUNT: z.coerce.number().int().positive().default(49900),
   PLAN_CURRENCY: z.string().trim().min(3).max(3).default("INR"),
   PLAN_INTERVAL: z.enum(["monthly", "yearly"]).default("monthly"),
   FREE_MESSAGE_LIMIT: z.coerce.number().int().nonnegative().default(10),

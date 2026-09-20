@@ -80,6 +80,7 @@ GOOGLE_PLAY_SUBSCRIPTION_PRODUCT_ID=eva_premium_monthly
 GOOGLE_PLAY_BASE_PLAN_ID=monthly
 GOOGLE_PLAY_SERVICE_ACCOUNT_JSON={"type":"service_account",...}
 GOOGLE_PLAY_RTDN_TOKEN=replace_with_a_long_random_secret
+PLAN_AMOUNT=49900
 ```
 
 If you store the Google service account as base64, put the base64 string in `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON`.
