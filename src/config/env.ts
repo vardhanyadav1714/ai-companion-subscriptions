@@ -48,6 +48,9 @@ const envSchema = z.object({
 
   PAYMENT_CONFIRMATION_URL: optionalUrl,
   PAYMENT_CONFIRMATION_TOKEN: z.string().optional().default(""),
+  REDIS_URL: optionalUrl,
+  QUEUE_NAME: z.string().trim().min(1).default("subscriptions_payments"),
+  QUEUE_WORKER_CONCURRENCY: z.coerce.number().int().positive().max(20).default(2),
   QUEUE_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
   QUEUE_BATCH_SIZE: z.coerce.number().int().positive().max(100).default(10),
   QUEUE_MAX_ATTEMPTS: z.coerce.number().int().positive().max(20).default(8),

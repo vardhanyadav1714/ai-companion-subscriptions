@@ -1,7 +1,18 @@
 import { env } from "../config/env.js";
 import { QueueJobModel, type QueueJobDocument } from "../models/queue-job.model.js";
+import { Queue } from "bullmq";
+import { Redis } from "ioredis";
 
 const JOB_TYPE = "payment_confirmation";
+let queue: Queue | null = null;
+
+function getQueue(): Queue | null {
+  if (!env.REDIS_URL) return null;
+  queue ??= new Queue(env.QUEUE_NAME, {
+    connection: new Redis(env.REDIS_URL, { maxRetriesPerRequest: null })
+  });
+  return queue;
+}
 
 export type PaymentConfirmation = {
   eventId: string;
@@ -18,7 +29,7 @@ export type PaymentConfirmation = {
 };
 
 export async function enqueuePaymentConfirmation(payload: PaymentConfirmation): Promise<void> {
-  await QueueJobModel.updateOne(
+  const job = await QueueJobModel.findOneAndUpdate(
     { jobType: JOB_TYPE, idempotencyKey: payload.eventId },
     {
       $setOnInsert: {
@@ -31,8 +42,26 @@ export async function enqueuePaymentConfirmation(payload: PaymentConfirmation): 
         payload
       }
     },
-    { upsert: true }
-  );
+    { upsert: true, new: true }
+  ).lean<QueueJobDocument>();
+  if (job && job.status !== "completed") await dispatchConfirmationJob(job);
+}
+
+export async function dispatchDueConfirmationJobs(limit = env.QUEUE_BATCH_SIZE): Promise<number> {
+  const jobs = await QueueJobModel.find({
+    jobType: JOB_TYPE,
+    status: { $in: ["pending", "retrying"] },
+    nextAttemptAt: { $lte: new Date() }
+  }).sort({ nextAttemptAt: 1, createdAt: 1 }).limit(limit).lean<QueueJobDocument[]>();
+  for (const job of jobs) await dispatchConfirmationJob(job);
+  return jobs.length;
+}
+
+export async function processConfirmationJobById(jobId: string): Promise<boolean> {
+  const job = await claimNextJob({ _id: jobId });
+  if (!job) return false;
+  await processClaimedJob(job);
+  return true;
 }
 
 export async function processDueConfirmationJobs(limit = env.QUEUE_BATCH_SIZE): Promise<number> {
@@ -52,10 +81,11 @@ export function retryDelaySeconds(attempt: number): number {
 
 export const confirmationQueueJobType = JOB_TYPE;
 
-async function claimNextJob(): Promise<QueueJobDocument | null> {
+async function claimNextJob(filter: Record<string, unknown> = {}): Promise<QueueJobDocument | null> {
   const now = new Date();
   return QueueJobModel.findOneAndUpdate(
     {
+      ...filter,
       jobType: JOB_TYPE,
       nextAttemptAt: { $lte: now },
       $or: [
@@ -72,6 +102,20 @@ async function claimNextJob(): Promise<QueueJobDocument | null> {
     },
     { sort: { nextAttemptAt: 1, createdAt: 1 }, new: true }
   ).lean<QueueJobDocument>();
+}
+
+async function dispatchConfirmationJob(job: QueueJobDocument): Promise<void> {
+  const currentQueue = getQueue();
+  if (!currentQueue) return;
+  try {
+    await currentQueue.add("payment-confirmation", { jobId: job._id.toString() }, {
+      jobId: `${JOB_TYPE}:${job._id.toString()}`,
+      removeOnComplete: 1000,
+      removeOnFail: 1000
+    });
+  } catch (error) {
+    console.error("Could not dispatch confirmation job to Redis", error);
+  }
 }
 
 async function processClaimedJob(job: QueueJobDocument): Promise<void> {

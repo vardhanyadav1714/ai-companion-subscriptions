@@ -1,0 +1,44 @@
+services:
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_DATABASE: eva_subscriptions
+    volumes:
+      - eva_subscription_mongo:/data/db
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - eva_subscription_redis:/data
+
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017/eva_subscriptions
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "3000:3000"
+    depends_on:
+      - mongodb
+      - redis
+
+  worker:
+    build: .
+    restart: unless-stopped
+    command: ["npm", "run", "start:worker"]
+    env_file: .env
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017/eva_subscriptions
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - mongodb
+      - redis
+
+volumes:
+  eva_subscription_mongo:
+  eva_subscription_redis:

@@ -139,9 +139,26 @@ been persisted:
 }
 ```
 
-Set `PAYMENT_CONFIRMATION_TOKEN` to protect that internal endpoint. Failed deliveries
+For the Eva deployment, point the callback at the backend receiver:
+
+```env
+PAYMENT_CONFIRMATION_URL=https://your-eva-api.example.com/internal/payment-confirmation
+PAYMENT_CONFIRMATION_TOKEN=the-same-random-secret-in-both-services
+```
+
+This URL/token is an Eva internal callback, not a Google Play setting. Failed deliveries
 are retried with exponential backoff up to `QUEUE_MAX_ATTEMPTS`; a worker restart or
 crash does not lose a claimed job because leases expire.
+
+Set `REDIS_URL` to a managed Redis instance in production. The worker also performs
+MongoDB due-job sweeps, so a temporary Redis outage does not lose confirmations.
+For local development, `docker compose up --build` starts MongoDB, Redis, the API,
+and the worker together.
+
+Google Play verification is configured independently with
+`GOOGLE_PLAY_PACKAGE_NAME`, `GOOGLE_PLAY_SUBSCRIPTION_PRODUCT_ID`,
+`GOOGLE_PLAY_BASE_PLAN_ID`, `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON`, and
+`GOOGLE_PLAY_RTDN_TOKEN`.
 
 Internal requests must include either:
 
