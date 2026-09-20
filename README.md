@@ -8,6 +8,7 @@ This service is based on the same production concerns as `hans-ai-subscriptions`
 - Razorpay subscription checkout support for web/outside-Play flows where policy permits it
 - MongoDB persistence for users, plans, subscriptions, payments, and webhook events
 - Idempotent webhook processing
+- Durable MongoDB confirmation queue with atomic claims, lease recovery, and exponential retries
 - Internal API key protection
 - Free and paid message limits: 10 free messages, 100 paid messages/day
 
@@ -105,6 +106,43 @@ Webhook:
 - `POST /api/v1/webhooks/google-play/rtdn?token=<GOOGLE_PLAY_RTDN_TOKEN>`
 - `POST /api/v1/webhooks/razorpay`
 
+Queue operations:
+
+- `POST /api/v1/internal/queue/process` (internal key; useful for a manual sweep or health check)
+
+After a subscription or payment is verified, the service writes a `payment_confirmation`
+job to MongoDB. Run the worker as a separate process so webhook requests stay fast:
+
+```bash
+npm run start:worker
+```
+
+The worker POSTs this payload to `PAYMENT_CONFIRMATION_URL` after the entitlement has
+been persisted:
+
+```json
+{
+  "type": "payment_confirmation",
+  "data": {
+    "eventId": "razorpay:payment:pay_...",
+    "userId": "user-id",
+    "provider": "razorpay",
+    "eventType": "payment.captured",
+    "planId": "eva_premium_monthly",
+    "active": true,
+    "status": "active",
+    "amount": 49900,
+    "currency": "INR",
+    "providerSubscriptionId": "sub_...",
+    "currentEnd": "2026-10-20T00:00:00.000Z"
+  }
+}
+```
+
+Set `PAYMENT_CONFIRMATION_TOKEN` to protect that internal endpoint. Failed deliveries
+are retried with exponential backoff up to `QUEUE_MAX_ATTEMPTS`; a worker restart or
+crash does not lose a claimed job because leases expire.
+
 Internal requests must include either:
 
 ```text
@@ -131,6 +169,10 @@ Start:
 ```bash
 npm start
 ```
+
+Run a second Coolify service from the same image with the start command
+`npm run start:worker`. Both services must share the same MongoDB database and queue
+environment variables. Do not expose the worker publicly.
 
 Healthcheck:
 

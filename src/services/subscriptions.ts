@@ -26,6 +26,7 @@ import {
   isGooglePlayConfigured,
   type GooglePlaySubscriptionPurchase
 } from "../providers/google-play.js";
+import { enqueuePaymentConfirmation } from "./confirmation-queue.js";
 
 export type Entitlement = {
   active: boolean;
@@ -134,6 +135,7 @@ export async function confirmRazorpayPayment(input: {
     },
     { upsert: true }
   );
+  await enqueueSubscriptionConfirmation(`razorpay:payment:${input.razorpayPaymentId}`, "payment.captured", subscription);
   return serializeEntitlement(subscription);
 }
 
@@ -155,6 +157,7 @@ export async function confirmGooglePlayPurchase(input: {
   await ensureDefaultPlan();
   const remote = await fetchGooglePlaySubscriptionPurchase(input.purchaseToken);
   const subscription = await upsertGooglePlaySubscription(input.userId, input.purchaseToken, remote);
+  await enqueueSubscriptionConfirmation(`google_play:purchase:${input.purchaseToken}`, "subscription.confirmed", subscription);
   return serializeEntitlement(subscription);
 }
 
@@ -241,6 +244,8 @@ export async function processRazorpayWebhook(input: {
     );
   }
 
+  await enqueueSubscriptionConfirmation(eventId, eventType, subscription);
+
   return { status: "processed" };
 }
 
@@ -280,8 +285,29 @@ export async function processGooglePlayRtdn(input: {
   }
 
   const remote = await fetchGooglePlaySubscriptionPurchase(purchaseToken);
-  await upsertGooglePlaySubscription(existing.userId, purchaseToken, remote);
+  const subscription = await upsertGooglePlaySubscription(existing.userId, purchaseToken, remote);
+  await enqueueSubscriptionConfirmation(eventId, eventType, subscription);
   return { status: "processed" };
+}
+
+async function enqueueSubscriptionConfirmation(
+  eventId: string,
+  eventType: string,
+  subscription: SubscriptionDocument
+): Promise<void> {
+  await enqueuePaymentConfirmation({
+    eventId,
+    userId: subscription.userId,
+    provider: subscription.provider,
+    eventType,
+    planId: subscription.planId,
+    active: subscription.active,
+    status: subscription.status,
+    amount: env.PLAN_AMOUNT,
+    currency: env.PLAN_CURRENCY,
+    providerSubscriptionId: subscription.providerSubscriptionId ?? "",
+    currentEnd: subscription.currentEnd?.toISOString() ?? null
+  });
 }
 
 export function mapGooglePlayStatus(state: string | undefined): SubscriptionStatus {

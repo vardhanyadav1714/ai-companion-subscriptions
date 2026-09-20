@@ -13,6 +13,7 @@ import {
   processRazorpayWebhook,
   syncSubscription
 } from "./services/subscriptions.js";
+import { processDueConfirmationJobs } from "./services/confirmation-queue.js";
 import { success } from "./utils/response.js";
 
 const userSchema = z.object({
@@ -44,6 +45,11 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.get("/health", async () => success({ service: "eva-subscriptions", status: "ok" }));
 
   app.get("/api/v1/plans", async () => success({ plans: await listPlans() }));
+
+  app.post("/api/v1/internal/queue/process", async (request: FastifyRequest) => {
+    requireInternalKey(request);
+    return success({ processed: await processDueConfirmationJobs() });
+  });
 
   app.get("/api/v1/subscriptions/:userId", async (request: FastifyRequest) => {
     requireInternalKey(request);
