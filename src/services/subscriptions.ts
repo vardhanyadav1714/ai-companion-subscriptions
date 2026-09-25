@@ -17,6 +17,7 @@ import {
   createRazorpaySubscription,
   fetchRazorpaySubscription,
   isRazorpayConfigured,
+  validateRazorpayPlan,
   verifyRazorpayCheckoutSignature,
   verifyRazorpayWebhookSignature,
   type RazorpaySubscription
@@ -88,13 +89,17 @@ export async function createRazorpayCheckout(input: {
   await upsertUser(input);
   await ensureDefaultPlan();
 
+  const entitlement = await getEntitlement(input.userId);
+  if (entitlement.active) return { checkoutUrl: "", subscription: entitlement };
+  await validateRazorpayPlan();
   const existing = await SubscriptionModel.findOne({
     userId: input.userId,
     provider: "razorpay",
     status: { $in: ["created", "pending", "authenticated", "active"] }
   }).sort({ updatedAt: -1 });
 
-  if (existing?.checkoutUrl && !isExpired(existing.currentEnd)) {
+  const existingPlan = (existing?.providerPayload as RazorpaySubscription | undefined)?.plan_id;
+  if (existing?.checkoutUrl && !isExpired(existing.currentEnd) && existingPlan === env.RAZORPAY_SUBSCRIPTION_PLAN_ID) {
     if (input.externalTransactionToken && !existing.externalTransactionToken) {
       await SubscriptionModel.updateOne({ _id: existing._id }, { $set: { externalTransactionToken: input.externalTransactionToken } });
     }

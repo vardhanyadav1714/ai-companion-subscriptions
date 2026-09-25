@@ -21,6 +21,14 @@ export function isRazorpayConfigured(): boolean {
   return Boolean(env.RAZORPAY_ENABLED && env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET);
 }
 
+export async function validateRazorpayPlan(): Promise<void> {
+  if (!env.RAZORPAY_SUBSCRIPTION_PLAN_ID || !env.RAZORPAY_WEBHOOK_SECRET) throw serviceUnavailable("Razorpay plan and webhook must be configured before checkout");
+  const remote = await razorpayRequest<{ id: string; period: string; interval: number; item?: { amount: number; currency: string; active?: boolean } }>("GET", `/plans/${encodeURIComponent(env.RAZORPAY_SUBSCRIPTION_PLAN_ID)}`);
+  if (remote.id !== env.RAZORPAY_SUBSCRIPTION_PLAN_ID || remote.period !== env.PLAN_INTERVAL || remote.interval !== 1 || remote.item?.amount !== env.PLAN_AMOUNT || remote.item?.currency !== env.PLAN_CURRENCY || remote.item?.active === false) {
+    throw serviceUnavailable("The payment plan does not match the advertised price. Checkout is unavailable.");
+  }
+}
+
 export async function createRazorpaySubscription(input: {
   userId: string;
   email?: string;
