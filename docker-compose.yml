@@ -1,5 +1,6 @@
 services:
   mongodb:
+    profiles: ["local-db"]
     image: mongo:7
     restart: unless-stopped
     environment:
@@ -19,12 +20,10 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      MONGODB_URI: mongodb://mongodb:27017/eva_subscriptions
       REDIS_URL: redis://redis:6379/0
     ports:
       - "3000:3000"
     depends_on:
-      - mongodb
       - redis
 
   worker:
@@ -33,10 +32,8 @@ services:
     command: ["npm", "run", "start:worker"]
     env_file: .env
     environment:
-      MONGODB_URI: mongodb://mongodb:27017/eva_subscriptions
       REDIS_URL: redis://redis:6379/0
     depends_on:
-      - mongodb
       - redis
 
 volumes:

@@ -9,7 +9,7 @@ let queue: Queue | null = null;
 function getQueue(): Queue | null {
   if (!env.REDIS_URL) return null;
   queue ??= new Queue(env.QUEUE_NAME, {
-    connection: new Redis(env.REDIS_URL, { maxRetriesPerRequest: null })
+    connection: new Redis(env.REDIS_URL, { maxRetriesPerRequest: 1, enableOfflineQueue: false, connectTimeout: 3000, commandTimeout: 3000 })
   });
   return queue;
 }
@@ -29,12 +29,16 @@ export type PaymentConfirmation = {
 };
 
 export async function enqueuePaymentConfirmation(payload: PaymentConfirmation): Promise<void> {
+  await enqueueJob(JOB_TYPE, payload.eventId, payload);
+}
+
+export async function enqueueJob(jobType: string, eventId: string, payload: Record<string, unknown>): Promise<void> {
   const job = await QueueJobModel.findOneAndUpdate(
-    { jobType: JOB_TYPE, idempotencyKey: payload.eventId },
+    { jobType, idempotencyKey: eventId },
     {
       $setOnInsert: {
-        jobType: JOB_TYPE,
-        idempotencyKey: payload.eventId,
+        jobType,
+        idempotencyKey: eventId,
         status: "pending",
         attempts: 0,
         maxAttempts: env.QUEUE_MAX_ATTEMPTS,
@@ -49,7 +53,6 @@ export async function enqueuePaymentConfirmation(payload: PaymentConfirmation): 
 
 export async function dispatchDueConfirmationJobs(limit = env.QUEUE_BATCH_SIZE): Promise<number> {
   const jobs = await QueueJobModel.find({
-    jobType: JOB_TYPE,
     status: { $in: ["pending", "retrying"] },
     nextAttemptAt: { $lte: new Date() }
   }).sort({ nextAttemptAt: 1, createdAt: 1 }).limit(limit).lean<QueueJobDocument[]>();
@@ -86,7 +89,6 @@ async function claimNextJob(filter: Record<string, unknown> = {}): Promise<Queue
   return QueueJobModel.findOneAndUpdate(
     {
       ...filter,
-      jobType: JOB_TYPE,
       nextAttemptAt: { $lte: now },
       $or: [
         { status: { $in: ["pending", "retrying"] } },
@@ -109,9 +111,9 @@ async function dispatchConfirmationJob(job: QueueJobDocument): Promise<void> {
   if (!currentQueue) return;
   try {
     await currentQueue.add("payment-confirmation", { jobId: job._id.toString() }, {
-      jobId: `${JOB_TYPE}:${job._id.toString()}`,
-      removeOnComplete: 1000,
-      removeOnFail: 1000
+      jobId: `${JOB_TYPE}-${job._id.toString()}-${job.attempts}`,
+      removeOnComplete: true,
+      removeOnFail: true
     });
   } catch (error) {
     console.error("Could not dispatch confirmation job to Redis", error);
@@ -120,16 +122,16 @@ async function dispatchConfirmationJob(job: QueueJobDocument): Promise<void> {
 
 async function processClaimedJob(job: QueueJobDocument): Promise<void> {
   try {
-    const result = await deliverConfirmation(job.payload);
+    const result = job.jobType === JOB_TYPE ? await deliverConfirmation(job.payload) : await processProviderEvent(job);
     await QueueJobModel.updateOne(
-      { _id: job._id, status: "processing" },
+      { _id: job._id, status: "processing", attempts: job.attempts },
       { $set: { status: "completed", completedAt: new Date(), lockedUntil: null, result } }
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Confirmation delivery failed";
     const shouldRetry = job.attempts < job.maxAttempts;
     await QueueJobModel.updateOne(
-      { _id: job._id, status: "processing" },
+      { _id: job._id, status: "processing", attempts: job.attempts },
       {
         $set: {
           status: shouldRetry ? "retrying" : "failed",
@@ -142,13 +144,33 @@ async function processClaimedJob(job: QueueJobDocument): Promise<void> {
   }
 }
 
+async function processProviderEvent(job: QueueJobDocument): Promise<Record<string, unknown>> {
+  if (job.jobType === "google_play_acknowledge") {
+    const { acknowledgeSubscription } = await import("../providers/google-play.js");
+    return acknowledgeSubscription(String(job.payload.purchaseToken));
+  }
+  if (job.jobType === "external_transaction") {
+    const { reportExternalTransaction } = await import("../providers/google-play.js");
+    return reportExternalTransaction(job.payload);
+  }
+  const service = await import("./subscriptions.js");
+  if (job.jobType === "razorpay_webhook") {
+    return service.processRazorpayWebhook({ rawBody: Buffer.alloc(0), signature: "", eventId: job.idempotencyKey, payload: job.payload }, true);
+  }
+  if (job.jobType === "google_play_rtdn") {
+    return service.processGooglePlayRtdn({ payload: job.payload }, true);
+  }
+  throw new Error("Unknown subscription job type");
+}
+
 async function deliverConfirmation(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   if (!env.PAYMENT_CONFIRMATION_URL) {
-    return { status: "skipped", reason: "PAYMENT_CONFIRMATION_URL is not configured" };
+    throw new Error("PAYMENT_CONFIRMATION_URL is not configured");
   }
 
   const response = await fetch(env.PAYMENT_CONFIRMATION_URL, {
     method: "POST",
+    signal: AbortSignal.timeout(15000),
     headers: {
       "Content-Type": "application/json",
       ...(env.PAYMENT_CONFIRMATION_TOKEN ? { Authorization: `Bearer ${env.PAYMENT_CONFIRMATION_TOKEN}` } : {})

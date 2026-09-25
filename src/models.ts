@@ -63,6 +63,8 @@ const subscriptionSchema = new Schema(
     autoRenew: { type: Boolean, required: true, default: false },
     checkoutUrl: { type: String, trim: true, default: "" },
     latestOrderId: { type: String, trim: true, default: "" },
+    externalTransactionToken: String,
+    initialExternalTransactionId: String,
     currentStart: { type: Date },
     currentEnd: { type: Date },
     cancelledAt: { type: Date },
@@ -74,8 +76,8 @@ const subscriptionSchema = new Schema(
 );
 
 subscriptionSchema.index({ userId: 1, updatedAt: -1 });
-subscriptionSchema.index({ provider: 1, providerSubscriptionId: 1 }, { unique: true, sparse: true });
-subscriptionSchema.index({ provider: 1, purchaseToken: 1 }, { unique: true, sparse: true });
+subscriptionSchema.index({ provider: 1, providerSubscriptionId: 1 }, { unique: true, partialFilterExpression: { providerSubscriptionId: { $type: "string" } } });
+subscriptionSchema.index({ provider: 1, purchaseToken: 1 }, { unique: true, partialFilterExpression: { purchaseToken: { $type: "string" } } });
 
 const paymentSchema = new Schema(
   {
@@ -92,7 +94,7 @@ const paymentSchema = new Schema(
   { timestamps: true }
 );
 
-paymentSchema.index({ provider: 1, providerPaymentId: 1 }, { unique: true, sparse: true });
+paymentSchema.index({ provider: 1, providerPaymentId: 1 }, { unique: true, partialFilterExpression: { providerPaymentId: { $type: "string" } } });
 
 const webhookEventSchema = new Schema(
   {
@@ -120,6 +122,8 @@ export type SubscriptionDocument = {
   autoRenew: boolean;
   checkoutUrl?: string;
   latestOrderId?: string;
+  externalTransactionToken?: string;
+  initialExternalTransactionId?: string;
   currentStart?: Date;
   currentEnd?: Date;
   cancelledAt?: Date;

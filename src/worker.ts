@@ -16,8 +16,6 @@ async function start(): Promise<void> {
   const stop = async () => {
     if (stopping) return;
     stopping = true;
-    await disconnectMongo();
-    process.exit(0);
   };
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
@@ -43,6 +41,10 @@ async function start(): Promise<void> {
     }
     await new Promise((resolve) => setTimeout(resolve, env.QUEUE_POLL_INTERVAL_MS));
   }
+  await redisWorker?.close();
+  redisConnection?.disconnect();
+  await disconnectMongo();
+  process.exit(0);
 }
 
 start().catch((error) => {

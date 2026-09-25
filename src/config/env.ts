@@ -38,6 +38,9 @@ const envSchema = z.object({
   GOOGLE_PLAY_BASE_PLAN_ID: z.string().trim().min(1).default("monthly"),
   GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: z.string().optional().default(""),
   GOOGLE_PLAY_RTDN_TOKEN: z.string().optional().default(""),
+  GOOGLE_PLAY_ALTERNATIVE_BILLING_ENABLED: booleanString(false),
+  GOOGLE_PLAY_TAX_RATE_BPS: z.coerce.number().int().min(0).default(0),
+  GOOGLE_PLAY_TAX_REGION: z.string().default("IN"),
 
   RAZORPAY_ENABLED: booleanString(false),
   RAZORPAY_KEY_ID: z.string().optional().default(""),

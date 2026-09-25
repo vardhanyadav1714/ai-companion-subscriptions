@@ -14,12 +14,14 @@ import {
   syncSubscription
 } from "./services/subscriptions.js";
 import { processDueConfirmationJobs } from "./services/confirmation-queue.js";
+import { QueueJobModel } from "./models/queue-job.model.js";
 import { success } from "./utils/response.js";
 
 const userSchema = z.object({
   userId: z.string().trim().min(1).max(160),
   email: z.string().trim().email().optional(),
-  name: z.string().trim().max(160).optional()
+  name: z.string().trim().max(160).optional(),
+  externalTransactionToken: z.string().min(1).max(4096).optional()
 });
 
 const googlePlayConfirmSchema = userSchema.extend({
@@ -42,6 +44,18 @@ const syncSchema = z.object({
 });
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
+  app.get("/api/v1/internal/queue/status", async request => {
+    requireInternalKey(request);
+    return success(await QueueJobModel.aggregate([{ $group: { _id: { type: "$jobType", status: "$status" }, count: { $sum: 1 } } }]));
+  });
+  app.post("/api/v1/internal/queue/:id/retry", async request => {
+    requireInternalKey(request);
+    const { id } = z.object({ id: z.string().regex(/^[a-f\d]{24}$/i) }).parse(request.params);
+    const result = await QueueJobModel.updateOne({ _id: id, status: "failed" }, {
+      $set: { status: "pending", attempts: 0, nextAttemptAt: new Date(), lastError: "" }
+    });
+    return success({ retried: result.modifiedCount === 1 });
+  });
   app.get("/health", async () => success({ service: "eva-subscriptions", status: "ok" }));
 
   app.get("/api/v1/plans", async () => success({ plans: await listPlans() }));

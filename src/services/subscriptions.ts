@@ -26,7 +26,7 @@ import {
   isGooglePlayConfigured,
   type GooglePlaySubscriptionPurchase
 } from "../providers/google-play.js";
-import { enqueuePaymentConfirmation } from "./confirmation-queue.js";
+import { enqueuePaymentConfirmation, enqueueJob } from "./confirmation-queue.js";
 
 export type Entitlement = {
   active: boolean;
@@ -66,12 +66,17 @@ export async function listPlans(): Promise<unknown[]> {
 }
 
 export async function getEntitlement(userId: string): Promise<Entitlement> {
-  const subscription = await SubscriptionModel.findOne({ userId }).sort({ updatedAt: -1 }).lean();
+  const active = await SubscriptionModel.findOne({
+    userId, active: true, status: { $in: ["active", "grace_period", "cancelled"] },
+    currentEnd: { $gt: new Date() }
+  }).sort({ currentEnd: -1 }).lean();
+  const subscription = active ?? await SubscriptionModel.findOne({ userId }).sort({ updatedAt: -1 }).lean();
   if (!subscription) return emptyEntitlement();
   return serializeEntitlement(subscription as SubscriptionDocument);
 }
 
 export async function createRazorpayCheckout(input: {
+  externalTransactionToken?: string;
   userId: string;
   email?: string;
   name?: string;
@@ -79,6 +84,7 @@ export async function createRazorpayCheckout(input: {
   if (!isRazorpayConfigured()) {
     throw serviceUnavailable("Razorpay checkout is disabled");
   }
+  if (input.externalTransactionToken && !env.GOOGLE_PLAY_ALTERNATIVE_BILLING_ENABLED) throw badRequest("Alternative billing is not enabled");
   await upsertUser(input);
   await ensureDefaultPlan();
 
@@ -89,11 +95,15 @@ export async function createRazorpayCheckout(input: {
   }).sort({ updatedAt: -1 });
 
   if (existing?.checkoutUrl && !isExpired(existing.currentEnd)) {
+    if (input.externalTransactionToken && !existing.externalTransactionToken) {
+      await SubscriptionModel.updateOne({ _id: existing._id }, { $set: { externalTransactionToken: input.externalTransactionToken } });
+    }
     return { checkoutUrl: existing.checkoutUrl, subscription: serializeEntitlement(existing) };
   }
 
   const created = await createRazorpaySubscription(input);
   const subscription = await upsertRazorpaySubscription(input.userId, created);
+  if (input.externalTransactionToken) await SubscriptionModel.updateOne({ _id: subscription._id }, { $set: { externalTransactionToken: input.externalTransactionToken } });
   return {
     checkoutUrl: created.short_url ?? "",
     subscription: serializeEntitlement(subscription)
@@ -196,32 +206,36 @@ export async function processRazorpayWebhook(input: {
   signature: string;
   eventId?: string;
   payload: Record<string, unknown>;
-}): Promise<{ status: string; reason?: string }> {
-  if (!verifyRazorpayWebhookSignature(input.rawBody, input.signature)) {
+}, queued = false): Promise<{ status: string; reason?: string }> {
+  if (!queued && !verifyRazorpayWebhookSignature(input.rawBody, input.signature)) {
     throw unauthorized("Invalid Razorpay webhook signature");
   }
 
   const eventType = String(input.payload.event ?? "unknown");
   const eventId = input.eventId || stableEventId("razorpay", eventType, input.payload);
+  if (!queued) {
+    await enqueueJob("razorpay_webhook", eventId, input.payload);
+    return { status: "queued" };
+  }
   const marker = await WebhookEventModel.updateOne(
     { eventId },
-    { $setOnInsert: { eventId, provider: "razorpay", eventType, status: "processed", payload: input.payload } },
+    { $setOnInsert: { eventId, provider: "razorpay", eventType, status: "failed", payload: input.payload } },
     { upsert: true }
   );
-  if (marker.upsertedCount === 0) return { status: "skipped", reason: "duplicate_event" };
 
   const subscriptionEntity = getPayloadEntity(input.payload, "subscription") as RazorpaySubscription | null;
   const paymentEntity = getPayloadEntity(input.payload, "payment") as Record<string, unknown> | null;
   const subscriptionId = String(subscriptionEntity?.id ?? paymentEntity?.subscription_id ?? "");
   const notes = normalizeNotes(subscriptionEntity?.notes ?? paymentEntity?.notes);
-  const userId = String(notes.userId ?? "");
+  const stored = await SubscriptionModel.findOne({ provider: "razorpay", providerSubscriptionId: subscriptionId });
+  const userId = stored?.userId || String(notes.userId ?? "");
 
   if (!subscriptionId || !userId) {
     await WebhookEventModel.updateOne({ eventId }, { $set: { status: "skipped", reason: "missing_user_or_subscription" } });
     return { status: "skipped", reason: "missing_user_or_subscription" };
   }
 
-  const remote = subscriptionEntity?.id ? subscriptionEntity : await fetchRazorpaySubscription(subscriptionId);
+  const remote = await fetchRazorpaySubscription(subscriptionId);
   const subscription = await upsertRazorpaySubscription(userId, remote);
 
   if (paymentEntity?.id) {
@@ -245,6 +259,12 @@ export async function processRazorpayWebhook(input: {
   }
 
   await enqueueSubscriptionConfirmation(eventId, eventType, subscription);
+  if (subscription.externalTransactionToken && paymentEntity?.status === "captured" && paymentEntity.id) {
+    await enqueueJob("external_transaction", `external-${paymentEntity.id}`, {
+      subscriptionId: subscription._id.toString(), payment: paymentEntity
+    });
+  }
+  await WebhookEventModel.updateOne({ eventId }, { $set: { status: "processed" } });
 
   return { status: "processed" };
 }
@@ -252,26 +272,30 @@ export async function processRazorpayWebhook(input: {
 export async function processGooglePlayRtdn(input: {
   token?: string;
   payload: Record<string, unknown>;
-}): Promise<{ status: string; reason?: string }> {
-  if (!env.GOOGLE_PLAY_RTDN_TOKEN || input.token !== env.GOOGLE_PLAY_RTDN_TOKEN) {
+}, queued = false): Promise<{ status: string; reason?: string }> {
+  if (!queued && (!env.GOOGLE_PLAY_RTDN_TOKEN || input.token !== env.GOOGLE_PLAY_RTDN_TOKEN)) {
     throw unauthorized("Invalid Google Play RTDN token");
   }
 
   const message = input.payload.message as { data?: string; messageId?: string } | undefined;
   const decoded = message?.data ? JSON.parse(Buffer.from(message.data, "base64").toString("utf8")) : input.payload;
+  if (decoded.packageName !== env.GOOGLE_PLAY_PACKAGE_NAME) throw badRequest("RTDN package does not match Eva");
   const notification = decoded.subscriptionNotification as
     | { notificationType?: number; purchaseToken?: string; subscriptionId?: string }
     | undefined;
   const purchaseToken = notification?.purchaseToken ?? "";
   const eventType = `SUBSCRIPTION_${notification?.notificationType ?? "UNKNOWN"}`;
   const eventId = message?.messageId || stableEventId("google_play", eventType, decoded);
+  if (!queued) {
+    await enqueueJob("google_play_rtdn", eventId, input.payload);
+    return { status: "queued" };
+  }
 
   const marker = await WebhookEventModel.updateOne(
     { eventId },
-    { $setOnInsert: { eventId, provider: "google_play", eventType, status: "processed", payload: decoded } },
+    { $setOnInsert: { eventId, provider: "google_play", eventType, status: "failed", payload: decoded } },
     { upsert: true }
   );
-  if (marker.upsertedCount === 0) return { status: "skipped", reason: "duplicate_event" };
 
   if (!purchaseToken) {
     await WebhookEventModel.updateOne({ eventId }, { $set: { status: "skipped", reason: "missing_purchase_token" } });
@@ -280,13 +304,13 @@ export async function processGooglePlayRtdn(input: {
 
   const existing = await SubscriptionModel.findOne({ provider: "google_play", purchaseToken });
   if (!existing) {
-    await WebhookEventModel.updateOne({ eventId }, { $set: { status: "skipped", reason: "unknown_purchase_token" } });
-    return { status: "skipped", reason: "unknown_purchase_token" };
+    throw serviceUnavailable("Purchase is not linked to a user yet");
   }
 
   const remote = await fetchGooglePlaySubscriptionPurchase(purchaseToken);
   const subscription = await upsertGooglePlaySubscription(existing.userId, purchaseToken, remote);
   await enqueueSubscriptionConfirmation(eventId, eventType, subscription);
+  await WebhookEventModel.updateOne({ eventId }, { $set: { status: "processed" } });
   return { status: "processed" };
 }
 
@@ -295,8 +319,9 @@ async function enqueueSubscriptionConfirmation(
   eventType: string,
   subscription: SubscriptionDocument
 ): Promise<void> {
+  if (!subscription.active || subscription.status !== "active" || !isEntitlementActive(subscription.status, subscription.currentEnd)) return;
   await enqueuePaymentConfirmation({
-    eventId,
+    eventId: createHash("sha256").update(`${subscription._id}:${subscription.currentEnd?.toISOString() ?? subscription.latestOrderId ?? eventId}`).digest("hex"),
     userId: subscription.userId,
     provider: subscription.provider,
     eventType,
@@ -332,8 +357,8 @@ export function mapGooglePlayStatus(state: string | undefined): SubscriptionStat
 }
 
 export function isEntitlementActive(status: SubscriptionStatus, currentEnd?: Date | null): boolean {
-  if (!(status === "active" || status === "authenticated" || status === "grace_period")) return false;
-  return !isExpired(currentEnd);
+  if (!(status === "active" || status === "grace_period" || (status === "cancelled" && currentEnd))) return false;
+  return Boolean(currentEnd && !isExpired(currentEnd));
 }
 
 async function upsertUser(input: { userId: string; email?: string; name?: string }) {
@@ -355,7 +380,8 @@ async function upsertGooglePlaySubscription(
   purchaseToken: string,
   remote: GooglePlaySubscriptionPurchase
 ): Promise<SubscriptionDocument> {
-  const lineItem = remote.lineItems?.[0] ?? {};
+  const lineItem = remote.lineItems?.find(item => item.productId === env.GOOGLE_PLAY_SUBSCRIPTION_PRODUCT_ID && item.offerDetails?.basePlanId === env.GOOGLE_PLAY_BASE_PLAN_ID);
+  if (!lineItem) throw badRequest("Purchase does not match the configured product and base plan");
   const status = mapGooglePlayStatus(remote.subscriptionState);
   const currentEnd = parseDate(lineItem.expiryTime);
   const update = {
@@ -378,11 +404,14 @@ async function upsertGooglePlaySubscription(
   };
 
   const subscription = await SubscriptionModel.findOneAndUpdate(
-    { provider: "google_play", purchaseToken },
+    { provider: "google_play", purchaseToken, userId },
     { $set: update },
     { upsert: true, new: true }
   );
   if (!subscription) throw serviceUnavailable("Could not persist Google Play subscription");
+  if (subscription.active && remote.acknowledgementState !== "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED") {
+    await enqueueJob("google_play_acknowledge", createHash("sha256").update(purchaseToken).digest("hex"), { purchaseToken });
+  }
   return subscription;
 }
 
@@ -393,7 +422,7 @@ async function upsertRazorpaySubscription(
   const status = mapRazorpayStatus(remote.status);
   const currentEnd = dateFromUnix(remote.current_end);
   const subscription = await SubscriptionModel.findOneAndUpdate(
-    { provider: "razorpay", providerSubscriptionId: remote.id },
+    { provider: "razorpay", providerSubscriptionId: remote.id, userId },
     {
       $set: {
         userId,
@@ -437,7 +466,7 @@ function mapRazorpayStatus(status: unknown): SubscriptionStatus {
 
 function serializeEntitlement(subscription: SubscriptionDocument): Entitlement {
   return {
-    active: subscription.active,
+    active: subscription.active && isEntitlementActive(subscription.status, subscription.currentEnd),
     status: subscription.status,
     provider: subscription.provider,
     planId: subscription.planId,

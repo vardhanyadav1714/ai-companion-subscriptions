@@ -77,6 +77,7 @@ async function razorpayRequest<T>(
 
   const response = await fetch(`https://api.razorpay.com/v1${path}`, {
     method,
+    signal: AbortSignal.timeout(15000),
     headers: {
       Authorization: `Basic ${Buffer.from(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`).toString("base64")}`,
       "Content-Type": "application/json"
