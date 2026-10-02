@@ -26,6 +26,7 @@ export type PaymentConfirmation = {
   currency: string;
   providerSubscriptionId: string;
   currentEnd: string | null;
+  notification?: { title: string; body: string };
 };
 
 export async function enqueuePaymentConfirmation(payload: PaymentConfirmation): Promise<void> {

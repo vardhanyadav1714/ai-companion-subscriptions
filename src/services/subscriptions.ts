@@ -222,11 +222,14 @@ export async function processRazorpayWebhook(input: {
     await enqueueJob("razorpay_webhook", eventId, input.payload);
     return { status: "queued" };
   }
-  const marker = await WebhookEventModel.updateOne(
+  const marker = await WebhookEventModel.findOneAndUpdate(
     { eventId },
     { $setOnInsert: { eventId, provider: "razorpay", eventType, status: "failed", payload: input.payload } },
-    { upsert: true }
+    { upsert: true, new: true }
   );
+  if (marker.status === "processed") {
+    return { status: "already_processed" };
+  }
 
   const subscriptionEntity = getPayloadEntity(input.payload, "subscription") as RazorpaySubscription | null;
   const paymentEntity = getPayloadEntity(input.payload, "payment") as Record<string, unknown> | null;
@@ -263,10 +266,52 @@ export async function processRazorpayWebhook(input: {
     );
   }
 
+  if (eventType.includes("failed") && paymentEntity?.id) {
+    // Failed payment: nudge the user to retry (best-effort, idempotent per payment).
+    await enqueuePaymentConfirmation({
+      eventId: `failed-${String(paymentEntity.id)}`,
+      userId,
+      provider: "razorpay",
+      eventType,
+      planId: env.PLAN_ID,
+      active: false,
+      status: "failed",
+      amount: Number(paymentEntity.amount ?? env.PLAN_AMOUNT),
+      currency: String(paymentEntity.currency ?? env.PLAN_CURRENCY),
+      providerSubscriptionId: subscriptionId,
+      currentEnd: null,
+      notification: {
+        title: "Payment didn't go through",
+        body: "Your last payment didn't complete, so Premium couldn't start. You can retry anytime from the app."
+      }
+    });
+  }
+
   await enqueueSubscriptionConfirmation(eventId, eventType, subscription);
   if (subscription.externalTransactionToken && paymentEntity?.status === "captured" && paymentEntity.id) {
     await enqueueJob("external_transaction", `external-${paymentEntity.id}`, {
       subscriptionId: subscription._id.toString(), payment: paymentEntity
+    });
+  }
+
+  if (subscription.status === "halted") {
+    // Halted (payment pending): nudge the user to fix the payment method.
+    await enqueuePaymentConfirmation({
+      eventId: `halted-${subscription._id.toString()}:${subscription.currentEnd?.toISOString() ?? ""}`,
+      userId,
+      provider: "razorpay",
+      eventType,
+      planId: subscription.planId,
+      active: false,
+      status: "halted",
+      amount: env.PLAN_AMOUNT,
+      currency: env.PLAN_CURRENCY,
+      providerSubscriptionId: subscription.providerSubscriptionId ?? "",
+      currentEnd: subscription.currentEnd?.toISOString() ?? null,
+      notification: {
+        title: "Action needed for Eva Premium",
+        body: "Your subscription payment is pending. Please complete it to keep Premium active."
+      }
     });
   }
   await WebhookEventModel.updateOne({ eventId }, { $set: { status: "processed" } });
@@ -296,11 +341,14 @@ export async function processGooglePlayRtdn(input: {
     return { status: "queued" };
   }
 
-  const marker = await WebhookEventModel.updateOne(
+  const marker = await WebhookEventModel.findOneAndUpdate(
     { eventId },
     { $setOnInsert: { eventId, provider: "google_play", eventType, status: "failed", payload: decoded } },
-    { upsert: true }
+    { upsert: true, new: true }
   );
+  if (marker.status === "processed") {
+    return { status: "already_processed" };
+  }
 
   if (!purchaseToken) {
     await WebhookEventModel.updateOne({ eventId }, { $set: { status: "skipped", reason: "missing_purchase_token" } });
