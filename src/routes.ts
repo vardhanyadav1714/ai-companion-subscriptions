@@ -88,7 +88,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.post("/api/v1/subscriptions/checkout/razorpay", async (request: FastifyRequest) => {
     requireInternalKey(request);
     const body = userSchema.parse(request.body ?? {});
-    return success(await createRazorpayCheckout(body));
+    return success({ ...await createRazorpayCheckout(body), keyId: env.RAZORPAY_KEY_ID });
   });
 
   app.post("/api/v1/subscriptions/confirm/razorpay", async (request: FastifyRequest) => {

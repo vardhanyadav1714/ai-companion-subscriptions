@@ -2,6 +2,35 @@
 
 Subscription entitlement service for Eva AI Companion.
 
+## Native Android Razorpay Checkout
+
+The Android app uses Razorpay Standard Checkout rather than a browser redirect
+after Google's approved user-choice billing callback. The internal checkout API
+returns the public `keyId` alongside the backend-created subscription identity.
+Only `RAZORPAY_KEY_ID` is sent to the client; the secret remains on this service.
+The app posts the SDK payment ID/signature and saved server subscription ID to
+the authenticated core API's `/api/v1/subscriptions/razorpay/verify`, which delegates
+to this service's existing ownership, signature and captured-payment checks.
+Webhook processing and reconciliation remain authoritative if the app is closed
+or only an authorization payment has completed.
+
+Deploy subscriptions first, core API second, then distribute a new signed app
+build. Until Google approves enrollment and Eva's eligible markets are configured,
+keep `GOOGLE_PLAY_ALTERNATIVE_BILLING_ENABLED=false` and build Android without
+`-PalternativeBillingEnabled=true`. A website Razorpay purchase does not depend
+on Play alternative-billing enrollment. Never add a direct Razorpay button to a
+Play build to bypass Google's choice screen.
+
+The verified Android dependencies are `checkout:1.6.41`, `standard-core:1.7.19`
+and its `core:1.0.19` dependency. The floating `LATEST` dependency is replaced
+with a pin for reproducible builds. `android.uniquePackageNames=false` works
+around Razorpay's duplicate namespaces on AGP 9; remove the workaround when
+Razorpay fixes the packaging, and re-test actual checkout before release.
+
+Monthly cancellation stops future renewals, not a charge that already completed.
+Paid access lasts through the verified paid period. Legal/provider refund
+exceptions and reversal webhooks must remain supported.
+
 This service is based on the same production concerns as `hans-ai-subscriptions`, but scoped for the AI girlfriend/companion app:
 
 - Google Play Billing verification for Play Store Android subscriptions
