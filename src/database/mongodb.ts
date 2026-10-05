@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
 
 import { env } from "../config/env.js";
-import { PaymentModel, SubscriptionModel, WebhookEventModel } from "../models.js";
+import { PaymentModel, SubscriptionModel, WebhookEventModel, PlanModel, UserModel } from "../models.js";
 import { QueueJobModel } from "../models/queue-job.model.js";
 
 export async function connectMongo(): Promise<void> {
@@ -9,7 +9,7 @@ export async function connectMongo(): Promise<void> {
     dbName: env.MONGODB_DATABASE,
     serverSelectionTimeoutMS: 8000
   });
-  await Promise.all([PaymentModel.init(), SubscriptionModel.init(), WebhookEventModel.init(), QueueJobModel.init()]);
+  await Promise.all([PaymentModel.init(), SubscriptionModel.init(), WebhookEventModel.init(), QueueJobModel.init(), PlanModel.init(), UserModel.init()]);
 }
 
 export async function disconnectMongo(): Promise<void> {

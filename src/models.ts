@@ -72,12 +72,14 @@ const subscriptionSchema = new Schema(
     endedAt: { type: Date },
     refundedThrough: { type: Date },
     lastSyncedAt: { type: Date },
+    lastSyncQueuedAt: { type: Date },
     providerPayload: { type: Schema.Types.Mixed }
   },
   { timestamps: true }
 );
 
 subscriptionSchema.index({ userId: 1, updatedAt: -1 });
+subscriptionSchema.index({ lastSyncedAt: 1, status: 1 });
 subscriptionSchema.index({ provider: 1, providerSubscriptionId: 1 }, { unique: true, partialFilterExpression: { providerSubscriptionId: { $type: "string" } } });
 subscriptionSchema.index({ provider: 1, purchaseToken: 1 }, { unique: true, partialFilterExpression: { purchaseToken: { $type: "string" } } });
 
@@ -133,6 +135,7 @@ export type SubscriptionDocument = {
   endedAt?: Date;
   refundedThrough?: Date;
   lastSyncedAt?: Date;
+  lastSyncQueuedAt?: Date;
   providerPayload?: unknown;
   createdAt: Date;
   updatedAt: Date;

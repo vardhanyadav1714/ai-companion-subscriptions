@@ -184,6 +184,8 @@ number greater than the latest uploaded version code, and optionally set
 Create one topic, for example `eva-play-rtdn`, and grant Pub/Sub Publisher on it
 to `google-play-developer-notifications@system.gserviceaccount.com`.
 Enter `projects/PROJECT_ID/topics/eva-play-rtdn` in Eva's Play Console RTDN setup.
+The app currently uses Firebase project `ai-companion-6ab69`; that existing
+Google Cloud project is a suitable choice if you administer it.
 
 Create a separate push identity such as
 `eva-play-push@PROJECT_ID.iam.gserviceaccount.com`. Configure a push subscription:
@@ -296,6 +298,10 @@ polls it. For a dedicated worker deploy the same image with
 and optionally set `REDIS_URL` for BullMQ dispatch. Disable the API's embedded
 worker only after that worker is running. MongoDB atomic claims allow multiple
 workers, and expired leases allow recovery after a process crash.
+The worker also queues provider reconciliation for stale subscriptions every
+15 minutes by default (`RECONCILIATION_INTERVAL_SECONDS=900`). This recovers
+state changes after a missed notification. Reconciliation and webhook jobs
+share the same durable queue and operator retry controls.
 
 ### Operations And Release Evidence
 

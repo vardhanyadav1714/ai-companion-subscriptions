@@ -62,7 +62,8 @@ const envSchema = z.object({
   QUEUE_MAX_ATTEMPTS: z.coerce.number().int().positive().max(20).default(8),
   QUEUE_RETRY_BASE_SECONDS: z.coerce.number().int().positive().default(60),
   QUEUE_RETRY_MAX_SECONDS: z.coerce.number().int().positive().default(1800),
-  QUEUE_LEASE_SECONDS: z.coerce.number().int().positive().default(300)
+  QUEUE_LEASE_SECONDS: z.coerce.number().int().positive().default(300),
+  RECONCILIATION_INTERVAL_SECONDS: z.coerce.number().int().min(60).default(900)
 });
 
 const parsed = envSchema.safeParse(process.env);

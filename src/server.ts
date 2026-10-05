@@ -1,7 +1,7 @@
 import { buildApp } from "./app.js";
 import { env } from "./config/env.js";
 import { connectMongo, disconnectMongo } from "./database/mongodb.js";
-import { ensureDefaultPlan } from "./services/subscriptions.js";
+import { ensureDefaultPlan, enqueueDueSubscriptionSyncs } from "./services/subscriptions.js";
 import { processDueConfirmationJobs, closeConfirmationQueue } from "./services/confirmation-queue.js";
 
 async function start() {
@@ -13,7 +13,7 @@ async function start() {
   let running: Promise<unknown> | undefined;
   const sweep = () => {
     if (running) return;
-    running = processDueConfirmationJobs().catch(() => app.log.error("Billing queue sweep failed"))
+    running = enqueueDueSubscriptionSyncs().then(() => processDueConfirmationJobs()).catch(() => app.log.error("Billing queue sweep failed"))
       .finally(() => { running = undefined; });
   };
   const timer = env.QUEUE_WORKER_ENABLED ? setInterval(sweep, env.QUEUE_POLL_INTERVAL_MS) : undefined;

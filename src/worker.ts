@@ -2,6 +2,7 @@ import { env } from "./config/env.js";
 import { connectMongo, disconnectMongo } from "./database/mongodb.js";
 import { Worker } from "bullmq";
 import { Redis } from "ioredis";
+import { enqueueDueSubscriptionSyncs } from "./services/subscriptions.js";
 import {
   dispatchDueConfirmationJobs,
   processConfirmationJobById,
@@ -36,6 +37,7 @@ async function start(): Promise<void> {
 
   while (!stopping) {
     try {
+      await enqueueDueSubscriptionSyncs();
       await dispatchDueConfirmationJobs();
       await processDueConfirmationJobs();
     } catch (error) {

@@ -172,6 +172,10 @@ async function processProviderEvent(job: QueueJobDocument): Promise<Record<strin
     return reportExternalRefund(job.payload);
   }
   const service = await import("./subscriptions.js");
+  if (job.jobType === "subscription_sync") {
+    const payload = job.payload as { userId: string; provider: "google_play" | "razorpay"; providerSubscriptionId?: string; purchaseToken?: string };
+    return service.syncSubscription(payload);
+  }
   if (job.jobType === "razorpay_webhook") {
     return service.processRazorpayWebhook({ rawBody: Buffer.alloc(0), signature: "", eventId: job.idempotencyKey, payload: job.payload }, true);
   }

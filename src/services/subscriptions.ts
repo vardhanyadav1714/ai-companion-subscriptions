@@ -228,17 +228,47 @@ export async function syncSubscription(input: {
 
   if (subscription.provider === "google_play" && subscription.purchaseToken) {
     const remote = await fetchGooglePlaySubscriptionPurchase(subscription.purchaseToken);
-    await upsertGooglePlaySubscription(subscription.userId, subscription.purchaseToken, remote);
+    const updated = await upsertGooglePlaySubscription(subscription.userId, subscription.purchaseToken, remote);
+    await enqueueSubscriptionConfirmation(`sync:${updated._id}`, "subscription.synced", updated);
     return getEntitlement(input.userId);
   }
 
   if (subscription.provider === "razorpay" && subscription.providerSubscriptionId) {
     const remote = await fetchRazorpaySubscription(subscription.providerSubscriptionId);
-    await upsertRazorpaySubscription(subscription.userId, remote);
+    const updated = await upsertRazorpaySubscription(subscription.userId, remote);
+    await enqueueSubscriptionConfirmation(`sync:${updated._id}`, "subscription.synced", updated);
     return getEntitlement(input.userId);
   }
 
   return serializeEntitlement(subscription);
+}
+
+export async function enqueueDueSubscriptionSyncs(): Promise<number> {
+  const providers: Provider[] = [];
+  if (isGooglePlayConfigured()) providers.push("google_play");
+  if (isRazorpayConfigured()) providers.push("razorpay");
+  if (!providers.length) return 0;
+  const interval = env.RECONCILIATION_INTERVAL_SECONDS * 1000;
+  const stale = new Date(Date.now() - interval);
+  const subscriptions = await SubscriptionModel.find({
+    provider: { $in: providers },
+    status: { $in: ["created", "pending", "authenticated", "active", "grace_period", "on_hold", "paused", "halted", "cancelled", "completed"] },
+    $and: [
+      { $or: [{ lastSyncedAt: { $lte: stale } }, { lastSyncedAt: { $exists: false } }] },
+      { $or: [{ lastSyncQueuedAt: { $lte: stale } }, { lastSyncQueuedAt: { $exists: false } }] },
+      { $or: [{ status: { $nin: ["cancelled", "completed"] } }, { active: true }, { currentEnd: { $gt: new Date() } }] }
+    ]
+  }).sort({ lastSyncedAt: 1 }).limit(env.QUEUE_BATCH_SIZE);
+  const bucket = Math.floor(Date.now() / interval);
+  for (const subscription of subscriptions) {
+    await enqueueJob("subscription_sync", `sync-${subscription._id}-${bucket}`, {
+      userId: subscription.userId, provider: subscription.provider,
+      ...(subscription.providerSubscriptionId ? { providerSubscriptionId: subscription.providerSubscriptionId } : {}),
+      ...(subscription.purchaseToken ? { purchaseToken: subscription.purchaseToken } : {})
+    });
+    await SubscriptionModel.updateOne({ _id: subscription._id }, { $set: { lastSyncQueuedAt: new Date() } });
+  }
+  return subscriptions.length;
 }
 
 export async function processRazorpayWebhook(input: {

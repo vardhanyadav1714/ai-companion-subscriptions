@@ -265,4 +265,17 @@ describe("billing persistence and lifecycle", () => {
       expect(providers.play).not.toHaveBeenCalled();
     } finally { await app.close(); }
   }, 15_000);
+
+  it("reconciles a stale subscription through the durable queue after a missed notification", async () => {
+    await confirm();
+    await queue.QueueJobModel.deleteMany({});
+    await models.SubscriptionModel.updateOne({ purchaseToken: token }, { $set: { lastSyncedAt: new Date(Date.now() - 1800_000) } });
+    expect(await service.enqueueDueSubscriptionSyncs()).toBe(1);
+    expect(await service.enqueueDueSubscriptionSyncs()).toBe(0);
+    const job = await queue.QueueJobModel.findOne({ jobType: "subscription_sync" });
+    providers.play.mockResolvedValue({ ...activePurchase(), subscriptionState: "SUBSCRIPTION_STATE_EXPIRED" });
+    expect(await jobs.processConfirmationJobById(job!._id.toString())).toBe(true);
+    await expect(service.getEntitlement("account-a")).resolves.toMatchObject({ active: false, status: "expired" });
+    expect((await queue.QueueJobModel.findById(job!._id))?.status).toBe("completed");
+  });
 });
