@@ -1,8 +1,10 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
+import mongoose from "mongoose";
+import { env } from "./config/env.js";
 
 import { badRequest } from "./errors.js";
-import { requireInternalKey } from "./security.js";
+import { requireInternalKey, requireGooglePlayPush } from "./security.js";
 import {
   confirmGooglePlayPurchase,
   confirmRazorpayPayment,
@@ -11,7 +13,8 @@ import {
   listPlans,
   processGooglePlayRtdn,
   processRazorpayWebhook,
-  syncSubscription
+  syncSubscription,
+  cancelSubscription
 } from "./services/subscriptions.js";
 import { processDueConfirmationJobs } from "./services/confirmation-queue.js";
 import { QueueJobModel } from "./models/queue-job.model.js";
@@ -56,7 +59,18 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     });
     return success({ retried: result.modifiedCount === 1 });
   });
-  app.get("/health", async () => success({ service: "eva-subscriptions", status: "ok" }));
+  app.get("/health", async (_request, reply) => {
+    const connected = mongoose.connection.readyState === 1;
+    return reply.status(connected ? 200 : 503).send(success({
+      service: "eva-subscriptions", status: connected ? "ok" : "degraded",
+      mongodbConnected: connected,
+      queueWorkerMode: env.QUEUE_WORKER_ENABLED ? "embedded" : "external",
+      googlePlayConfigured: Boolean(env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON.trim()),
+      authenticatedPushConfigured: Boolean(env.GOOGLE_PLAY_RTDN_AUDIENCE && env.GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL),
+      razorpayEnabled: env.RAZORPAY_ENABLED,
+      confirmationConfigured: Boolean(env.PAYMENT_CONFIRMATION_URL && env.PAYMENT_CONFIRMATION_TOKEN)
+    }));
+  });
 
   app.get("/api/v1/plans", async () => success({ plans: await listPlans() }));
 
@@ -95,6 +109,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     return success(await syncSubscription(body));
   });
 
+  app.post("/api/v1/subscriptions/cancel", async request => {
+    requireInternalKey(request);
+    const body = z.object({ userId: z.string().trim().min(1).max(160) }).parse(request.body);
+    return success(await cancelSubscription(body.userId));
+  });
+
   app.post("/api/v1/webhooks/razorpay", async (request: FastifyRequest) => {
     const rawBody = (request as FastifyRequest & { rawBody?: Buffer }).rawBody;
     if (!rawBody) throw badRequest("Raw body is required for webhook verification");
@@ -105,8 +125,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post("/api/v1/webhooks/google-play/rtdn", async (request: FastifyRequest) => {
-    const query = z.object({ token: z.string().optional() }).parse(request.query ?? {});
+    await requireGooglePlayPush(request);
     const payload = z.record(z.unknown()).parse(request.body ?? {});
-    return success(await processGooglePlayRtdn({ token: query.token, payload }));
+    return success(await processGooglePlayRtdn({ payload }, false, true));
   });
 }

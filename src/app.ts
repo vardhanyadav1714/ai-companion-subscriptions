@@ -3,13 +3,15 @@ import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import sensible from "@fastify/sensible";
 import Fastify from "fastify";
+import { ZodError } from "zod";
 
 import { env } from "./config/env.js";
 import { HttpError } from "./errors.js";
 import { registerRoutes } from "./routes.js";
 
 export async function buildApp() {
-  const app = Fastify({ logger: { level: env.LOG_LEVEL } });
+  const app = Fastify({ logger: { level: env.LOG_LEVEL, redact: ["req.headers.authorization", "req.headers.x-subscriptions-key"] },
+    disableRequestLogging: true, bodyLimit: 1024 * 1024 });
 
   app.addContentTypeParser("application/json", { parseAs: "buffer" }, (request, body, done) => {
     const rawBody = Buffer.isBuffer(body) ? body : Buffer.from(body);
@@ -21,6 +23,7 @@ export async function buildApp() {
     try {
       done(null, JSON.parse(rawBody.toString("utf8")) as unknown);
     } catch (error) {
+      (error as Error & { statusCode: number }).statusCode = 400;
       done(error as Error);
     }
   });
@@ -38,13 +41,16 @@ export async function buildApp() {
 
   await registerRoutes(app);
 
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
+    if (error instanceof ZodError) {
+      return reply.status(400).send({ success: false, error: { message: "Request validation failed", details: error.flatten() } });
+    }
     if (error instanceof HttpError) {
       reply.status(error.statusCode).send({
         success: false,
         error: {
           message: error.message,
-          details: error.details
+          details: env.NODE_ENV === "production" ? undefined : error.details
         }
       });
       return;
@@ -53,6 +59,7 @@ export async function buildApp() {
     const appError = error as { statusCode?: unknown; message?: unknown };
     const statusCode = typeof appError.statusCode === "number" ? appError.statusCode : 500;
     const message = typeof appError.message === "string" ? appError.message : "Request failed";
+    if (statusCode >= 500) request.log.error({ statusCode }, "Billing request failed");
     reply.status(statusCode).send({
       success: false,
       error: {

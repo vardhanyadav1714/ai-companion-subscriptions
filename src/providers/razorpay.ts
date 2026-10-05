@@ -49,7 +49,49 @@ export async function createRazorpaySubscription(input: {
 }
 
 export async function fetchRazorpaySubscription(subscriptionId: string): Promise<RazorpaySubscription> {
-  return razorpayRequest<RazorpaySubscription>("GET", `/subscriptions/${subscriptionId}`);
+  return razorpayRequest<RazorpaySubscription>("GET", `/subscriptions/${encodeURIComponent(subscriptionId)}`);
+}
+
+export async function cancelRazorpaySubscription(id: string): Promise<RazorpaySubscription> {
+  return razorpayRequest("POST", `/subscriptions/${encodeURIComponent(id)}/cancel`, { cancel_at_cycle_end: 1 });
+}
+
+export type RazorpayPayment = {
+  id: string; amount: number; currency: string; status: string; created_at: number;
+  invoice_id?: string; subscription_id?: string; amount_refunded?: number;
+  [key: string]: unknown;
+};
+
+export async function fetchRazorpayPayment(id: string): Promise<RazorpayPayment> {
+  return razorpayRequest("GET", `/payments/${encodeURIComponent(id)}`);
+}
+
+export async function fetchRazorpayInvoice(id: string): Promise<{ subscription_id?: string; payment_id?: string }> {
+  return razorpayRequest("GET", `/invoices/${encodeURIComponent(id)}`);
+}
+
+export async function fetchRazorpayRefund(id: string): Promise<{ id: string; payment_id: string; amount: number; status: string; created_at: number }> {
+  return razorpayRequest("GET", `/refunds/${encodeURIComponent(id)}`);
+}
+
+export async function fetchInitialRazorpayPayment(subscriptionId: string): Promise<RazorpayPayment> {
+  const paid: Array<{ payment_id: string; created_at: number }> = [];
+  for (let skip = 0; skip < 1000; skip += 100) {
+    const page = await razorpayRequest<{ items: Array<{ status: string; amount: number; payment_id?: string; created_at: number }> }>(
+      "GET", `/invoices?subscription_id=${encodeURIComponent(subscriptionId)}&count=100&skip=${skip}`
+    );
+    for (const invoice of page.items) {
+      if (invoice.status === "paid" && invoice.amount === env.PLAN_AMOUNT && invoice.payment_id) {
+        paid.push({ payment_id: invoice.payment_id, created_at: invoice.created_at });
+      }
+    }
+    if (page.items.length < 100) {
+      const first = paid.sort((left, right) => left.created_at - right.created_at)[0];
+      if (!first) throw serviceUnavailable("Initial paid subscription invoice is not available yet");
+      return fetchRazorpayPayment(first.payment_id);
+    }
+  }
+  throw serviceUnavailable("Subscription invoice history needs reconciliation before external reporting");
 }
 
 export function verifyRazorpayCheckoutSignature(input: {
@@ -96,7 +138,7 @@ async function razorpayRequest<T>(
   const data = text ? JSON.parse(text) : {};
 
   if (!response.ok) {
-    throw serviceUnavailable("Razorpay request failed", { statusCode: response.status, data });
+    throw serviceUnavailable("Razorpay request failed", { statusCode: response.status });
   }
 
   return data as T;

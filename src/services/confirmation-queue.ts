@@ -5,13 +5,26 @@ import { Redis } from "ioredis";
 
 const JOB_TYPE = "payment_confirmation";
 let queue: Queue | null = null;
+let redis: Redis | null = null;
 
 function getQueue(): Queue | null {
   if (!env.REDIS_URL) return null;
-  queue ??= new Queue(env.QUEUE_NAME, {
-    connection: new Redis(env.REDIS_URL, { maxRetriesPerRequest: 1, enableOfflineQueue: false, connectTimeout: 3000, commandTimeout: 3000 })
-  });
+  if (!redis) {
+    redis = new Redis(env.REDIS_URL, { maxRetriesPerRequest: 1, enableOfflineQueue: false, connectTimeout: 3000, commandTimeout: 3000 });
+    redis.on("error", () => console.error("Redis dispatch unavailable; MongoDB jobs remain durable"));
+  }
+  if (!queue) {
+    queue = new Queue(env.QUEUE_NAME, { connection: redis });
+    queue.on("error", () => console.error("Redis queue unavailable; MongoDB polling continues"));
+  }
   return queue;
+}
+
+export async function closeConfirmationQueue(): Promise<void> {
+  await queue?.close();
+  redis?.disconnect();
+  queue = null;
+  redis = null;
 }
 
 export type PaymentConfirmation = {
@@ -117,7 +130,7 @@ async function dispatchConfirmationJob(job: QueueJobDocument): Promise<void> {
       removeOnFail: true
     });
   } catch (error) {
-    console.error("Could not dispatch confirmation job to Redis", error);
+    console.error("Could not dispatch confirmation job to Redis");
   }
 }
 
@@ -154,6 +167,10 @@ async function processProviderEvent(job: QueueJobDocument): Promise<Record<strin
     const { reportExternalTransaction } = await import("../providers/google-play.js");
     return reportExternalTransaction(job.payload);
   }
+  if (job.jobType === "external_refund") {
+    const { reportExternalRefund } = await import("../providers/google-play.js");
+    return reportExternalRefund(job.payload);
+  }
   const service = await import("./subscriptions.js");
   if (job.jobType === "razorpay_webhook") {
     return service.processRazorpayWebhook({ rawBody: Buffer.alloc(0), signature: "", eventId: job.idempotencyKey, payload: job.payload }, true);
@@ -179,6 +196,6 @@ async function deliverConfirmation(payload: Record<string, unknown>): Promise<Re
     body: JSON.stringify({ type: JOB_TYPE, data: payload })
   });
   const body = await response.text();
-  if (!response.ok) throw new Error(`Confirmation endpoint returned ${response.status}: ${body.slice(0, 240)}`);
-  return { status: "sent", statusCode: response.status, body: body.slice(0, 500) };
+  if (!response.ok) throw new Error(`Confirmation endpoint returned ${response.status}`);
+  return { status: "sent", statusCode: response.status };
 }

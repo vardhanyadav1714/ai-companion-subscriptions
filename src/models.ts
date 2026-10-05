@@ -61,6 +61,7 @@ const subscriptionSchema = new Schema(
     status: { type: String, required: true, enum: subscriptionStatuses, default: "pending" },
     active: { type: Boolean, required: true, default: false },
     autoRenew: { type: Boolean, required: true, default: false },
+    cancelAtPeriodEnd: { type: Boolean, required: true, default: false },
     checkoutUrl: { type: String, trim: true, default: "" },
     latestOrderId: { type: String, trim: true, default: "" },
     externalTransactionToken: String,
@@ -69,6 +70,7 @@ const subscriptionSchema = new Schema(
     currentEnd: { type: Date },
     cancelledAt: { type: Date },
     endedAt: { type: Date },
+    refundedThrough: { type: Date },
     lastSyncedAt: { type: Date },
     providerPayload: { type: Schema.Types.Mixed }
   },
@@ -120,6 +122,7 @@ export type SubscriptionDocument = {
   status: SubscriptionStatus;
   active: boolean;
   autoRenew: boolean;
+  cancelAtPeriodEnd?: boolean;
   checkoutUrl?: string;
   latestOrderId?: string;
   externalTransactionToken?: string;
@@ -128,6 +131,7 @@ export type SubscriptionDocument = {
   currentEnd?: Date;
   cancelledAt?: Date;
   endedAt?: Date;
+  refundedThrough?: Date;
   lastSyncedAt?: Date;
   providerPayload?: unknown;
   createdAt: Date;

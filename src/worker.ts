@@ -5,7 +5,8 @@ import { Redis } from "ioredis";
 import {
   dispatchDueConfirmationJobs,
   processConfirmationJobById,
-  processDueConfirmationJobs
+  processDueConfirmationJobs,
+  closeConfirmationQueue
 } from "./services/confirmation-queue.js";
 
 async function start(): Promise<void> {
@@ -31,6 +32,7 @@ async function start(): Promise<void> {
       )
     : null;
   redisWorker?.on("failed", (job, error) => console.error("Confirmation queue job failed", job?.id, error));
+  redisWorker?.on("error", () => console.error("Redis worker unavailable; MongoDB polling continues"));
 
   while (!stopping) {
     try {
@@ -43,6 +45,7 @@ async function start(): Promise<void> {
   }
   await redisWorker?.close();
   redisConnection?.disconnect();
+  await closeConfirmationQueue();
   await disconnectMongo();
   process.exit(0);
 }
