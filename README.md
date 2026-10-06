@@ -405,7 +405,7 @@ Authorization: Bearer <SUBSCRIPTIONS_API_KEY>
 Build:
 
 ```bash
-npm install
+npm ci
 npm run build
 ```
 

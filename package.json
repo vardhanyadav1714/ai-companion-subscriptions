@@ -4,6 +4,7 @@
   "private": true,
   "description": "Subscription entitlement service for Eva AI Companion.",
   "type": "module",
+  "packageManager": "npm@10.9.4",
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
