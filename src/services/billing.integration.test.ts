@@ -239,7 +239,15 @@ describe("billing persistence and lifecycle", () => {
 
   it("never reuses a website checkout for a Google Play billing-choice token", async () => {
     const { env } = await import("../config/env.js");
+    const saved = { ...env };
     env.GOOGLE_PLAY_ALTERNATIVE_BILLING_ENABLED = true;
+    env.RAZORPAY_ENABLED = true;
+    env.RAZORPAY_KEY_ID = "rzp_test_key";
+    env.RAZORPAY_KEY_SECRET = "test-secret";
+    env.RAZORPAY_WEBHOOK_SECRET = "test-webhook-secret";
+    env.GOOGLE_PLAY_RTDN_AUDIENCE = "https://billing.example/rtdn";
+    env.GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL = "push@example.iam.gserviceaccount.com";
+    process.env.GOOGLE_PLAY_TAX_RATE_BPS = "0";
     try {
       const created = { id: "sub_choice", plan_id: "plan_test", status: "created", short_url: "https://rzp.io/choice", notes: { userId: "account-a" } };
       providers.create.mockResolvedValue(created);
@@ -250,7 +258,7 @@ describe("billing persistence and lifecycle", () => {
       expect((await models.SubscriptionModel.findOne({ providerSubscriptionId: "sub_choice" }))?.billingAdministrativeArea).toBe("DELHI");
       await service.createRazorpayCheckout({ userId: "account-a", externalTransactionToken: "choice-token", billingCountryCode: "IN", billingAdministrativeArea: "DELHI" });
       expect(providers.create).toHaveBeenCalledTimes(1);
-    } finally { env.GOOGLE_PLAY_ALTERNATIVE_BILLING_ENABLED = false; }
+    } finally { Object.assign(env, saved); delete process.env.GOOGLE_PLAY_TAX_RATE_BPS; }
   });
 
   it("cancels only the user's own Razorpay renewal and preserves paid time", async () => {

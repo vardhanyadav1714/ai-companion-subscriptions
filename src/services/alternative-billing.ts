@@ -9,6 +9,13 @@ export const indiaAdministrativeAreas = [
   "PUNJAB", "RAJASTHAN", "SIKKIM", "TAMIL NADU", "TELANGANA", "TRIPURA", "UTTAR PRADESH", "UTTARAKHAND", "WEST BENGAL"
 ] as const;
 
+export function isAlternativeBillingReady(): boolean {
+  return env.GOOGLE_PLAY_ALTERNATIVE_BILLING_ENABLED && env.RAZORPAY_ENABLED &&
+    Boolean(env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON && env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET && env.RAZORPAY_WEBHOOK_SECRET &&
+      env.GOOGLE_PLAY_RTDN_AUDIENCE && env.GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL && process.env.GOOGLE_PLAY_TAX_RATE_BPS?.trim()) &&
+    env.GOOGLE_PLAY_TAX_REGION === "IN" && env.PLAN_CURRENCY === "INR";
+}
+
 export function validateAlternativeBilling(input: {
   externalTransactionToken?: string; billingCountryCode?: string; billingAdministrativeArea?: string;
 }): void {
@@ -17,7 +24,7 @@ export function validateAlternativeBilling(input: {
     return;
   }
   if (!env.GOOGLE_PLAY_ALTERNATIVE_BILLING_ENABLED) throw badRequest("Alternative billing is not enabled");
-  if (!env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON || env.GOOGLE_PLAY_TAX_REGION !== "IN" || env.PLAN_CURRENCY !== "INR") {
+  if (!isAlternativeBillingReady()) {
     throw serviceUnavailable("India alternative billing reporting is not configured");
   }
   if (input.billingCountryCode !== "IN") throw badRequest("Razorpay billing choice is available only in India");

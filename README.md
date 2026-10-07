@@ -458,6 +458,10 @@ only after app enrollment and release checks. Set `GOOGLE_PLAY_TAX_RATE_BPS` to
 the actual tax rate included in the configured plan amount (for example, 1800
 for 18%, or 0 when no tax is collected). Do not infer tax registration or change
 the price to add tax without checking merchant requirements.
+The native app also checks authenticated `/subscriptions/billing-options` on the
+core API before each checkout. Missing settings, a disabled switch, or a failed
+options request falls back to Google Play only. The server switch can be enabled
+later without another app rebuild.
 
 Captured payments are reported through durable, idempotent MongoDB jobs after
 SDK verification or signed webhooks. Reconciliation also scans provider-paid

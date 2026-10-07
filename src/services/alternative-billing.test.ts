@@ -9,6 +9,13 @@ beforeEach(() => {
   env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON = "{}";
   env.GOOGLE_PLAY_TAX_REGION = "IN";
   env.PLAN_CURRENCY = "INR";
+  env.RAZORPAY_ENABLED = true;
+  env.RAZORPAY_KEY_ID = "rzp_test_key";
+  env.RAZORPAY_KEY_SECRET = "test-secret";
+  env.RAZORPAY_WEBHOOK_SECRET = "test-webhook-secret";
+  env.GOOGLE_PLAY_RTDN_AUDIENCE = "https://billing.example/rtdn";
+  env.GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL = "push@example.iam.gserviceaccount.com";
+  process.env.GOOGLE_PLAY_TAX_RATE_BPS = "0";
 });
 describe("India user-choice billing guard", () => {
   it("allows website checkout without Play choice metadata", () => expect(() => validateAlternativeBilling({})).not.toThrow());
@@ -31,5 +38,12 @@ describe("India user-choice billing guard", () => {
   });
   it("does not accept choice metadata without a Google token", () => {
     expect(() => validateAlternativeBilling({ billingCountryCode: "IN" })).toThrow("token is required");
+  });
+  it("blocks checkout until the explicit tax rate and authenticated RTDN are configured", () => {
+    delete process.env.GOOGLE_PLAY_TAX_RATE_BPS;
+    expect(() => validateAlternativeBilling(choice)).toThrow("not configured");
+    process.env.GOOGLE_PLAY_TAX_RATE_BPS = "0";
+    env.GOOGLE_PLAY_RTDN_AUDIENCE = "";
+    expect(() => validateAlternativeBilling(choice)).toThrow("not configured");
   });
 });

@@ -19,6 +19,7 @@ import {
 import { processDueConfirmationJobs } from "./services/confirmation-queue.js";
 import { QueueJobModel } from "./models/queue-job.model.js";
 import { success } from "./utils/response.js";
+import { isAlternativeBillingReady } from "./services/alternative-billing.js";
 
 const userSchema = z.object({
   userId: z.string().trim().min(1).max(160),
@@ -49,6 +50,13 @@ const syncSchema = z.object({
 });
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
+  app.get("/api/v1/billing/options", async request => {
+    requireInternalKey(request);
+    return success({
+      alternativeBillingEnabled: isAlternativeBillingReady(),
+      alternativeBillingCountries: ["IN"]
+    });
+  });
   app.get("/api/v1/internal/queue/reporting-status", async request => {
     requireInternalKey(request);
     const filter = { jobType: { $in: ["external_transaction", "external_refund"] }, status: { $ne: "completed" } };
