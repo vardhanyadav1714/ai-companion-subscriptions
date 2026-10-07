@@ -144,6 +144,9 @@ async function processClaimedJob(job: QueueJobDocument): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Confirmation delivery failed";
     const shouldRetry = job.attempts < job.maxAttempts;
+    if (!shouldRetry && (job.jobType === "external_transaction" || job.jobType === "external_refund")) {
+      console.error(`Google Play reporting requires intervention: ${job.jobType}, job ${job._id}`);
+    }
     await QueueJobModel.updateOne(
       { _id: job._id, status: "processing", attempts: job.attempts },
       {

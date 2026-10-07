@@ -75,6 +75,13 @@ export async function fetchRazorpayRefund(id: string): Promise<{ id: string; pay
 }
 
 export async function fetchInitialRazorpayPayment(subscriptionId: string): Promise<RazorpayPayment> {
+  const paid = await fetchPaidSubscriptionInvoices(subscriptionId);
+  const first = paid[0];
+  if (!first) throw serviceUnavailable("Initial paid subscription invoice is not available yet");
+  return fetchRazorpayPayment(first.payment_id);
+}
+
+export async function fetchPaidSubscriptionInvoices(subscriptionId: string): Promise<Array<{ payment_id: string; created_at: number }>> {
   const paid: Array<{ payment_id: string; created_at: number }> = [];
   for (let skip = 0; skip < 1000; skip += 100) {
     const page = await razorpayRequest<{ items: Array<{ status: string; amount: number; payment_id?: string; created_at: number }> }>(
@@ -86,9 +93,7 @@ export async function fetchInitialRazorpayPayment(subscriptionId: string): Promi
       }
     }
     if (page.items.length < 100) {
-      const first = paid.sort((left, right) => left.created_at - right.created_at)[0];
-      if (!first) throw serviceUnavailable("Initial paid subscription invoice is not available yet");
-      return fetchRazorpayPayment(first.payment_id);
+      return paid.sort((left, right) => left.created_at - right.created_at);
     }
   }
   throw serviceUnavailable("Subscription invoice history needs reconciliation before external reporting");

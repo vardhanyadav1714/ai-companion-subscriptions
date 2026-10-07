@@ -10,6 +10,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "start:worker": "node dist/worker.js",
+    "check:billing": "node dist/commands/billing-readiness.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --cache false"
   },

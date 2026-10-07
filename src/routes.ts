@@ -24,7 +24,9 @@ const userSchema = z.object({
   userId: z.string().trim().min(1).max(160),
   email: z.string().trim().email().optional(),
   name: z.string().trim().max(160).optional(),
-  externalTransactionToken: z.string().min(1).max(4096).optional()
+  externalTransactionToken: z.string().min(1).max(4096).optional(),
+  billingCountryCode: z.string().regex(/^[A-Z]{2}$/).optional(),
+  billingAdministrativeArea: z.string().trim().max(80).optional()
 });
 
 const googlePlayConfirmSchema = userSchema.extend({
@@ -47,6 +49,19 @@ const syncSchema = z.object({
 });
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
+  app.get("/api/v1/internal/queue/reporting-status", async request => {
+    requireInternalKey(request);
+    const filter = { jobType: { $in: ["external_transaction", "external_refund"] }, status: { $ne: "completed" } };
+    const [outstanding, failed, overdue] = await Promise.all([
+      QueueJobModel.countDocuments(filter),
+      QueueJobModel.countDocuments({ ...filter, status: "failed" }),
+      QueueJobModel.countDocuments({ ...filter, $or: [
+        { "payload.payment.created_at": { $lte: Math.floor(Date.now() / 1000) - 86400 }, jobType: "external_transaction" },
+        { "payload.refund.created_at": { $lte: Math.floor(Date.now() / 1000) - 86400 }, jobType: "external_refund" }
+      ] })
+    ]);
+    return success({ outstanding, failed, overdue, healthy: failed === 0 && overdue === 0 });
+  });
   app.get("/api/v1/internal/queue/status", async request => {
     requireInternalKey(request);
     return success(await QueueJobModel.aggregate([{ $group: { _id: { type: "$jobType", status: "$status" }, count: { $sum: 1 } } }]));
@@ -68,6 +83,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       googlePlayConfigured: Boolean(env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON.trim()),
       authenticatedPushConfigured: Boolean(env.GOOGLE_PLAY_RTDN_AUDIENCE && env.GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL),
       razorpayEnabled: env.RAZORPAY_ENABLED,
+      alternativeBillingEnabled: env.GOOGLE_PLAY_ALTERNATIVE_BILLING_ENABLED,
       confirmationConfigured: Boolean(env.PAYMENT_CONFIRMATION_URL && env.PAYMENT_CONFIRMATION_TOKEN)
     }));
   });

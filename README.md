@@ -438,7 +438,49 @@ FREE_MESSAGE_LIMIT=10
 PAID_DAILY_MESSAGE_LIMIT=100
 ```
 
-## Safety
+## India User-Choice Billing
+
+Eva is enrolled for user-choice billing in India only. Other Play countries must
+use standard Google Play Billing. The native app uses `getBillingConfigAsync` for
+each checkout, and never persists that response in the user profile. Google Play
+renders the choice screen; Razorpay opens only after its alternative-choice
+callback returns the product and external transaction token.
+
+Android checkout sends the token, `billingCountryCode=IN`, and the customer's
+selected `billingAdministrativeArea` through the authenticated core API. The
+subscription service validates India and its state before creating checkout.
+The country input is not standalone proof of eligibility: the Google SDK and
+India-only Console enrollment govern the flow, and Google validates the opaque
+token during reporting. Never expose the internal service key to clients.
+
+Set `GOOGLE_PLAY_ALTERNATIVE_BILLING_ENABLED=true` on both billing API and worker
+only after app enrollment and release checks. Set `GOOGLE_PLAY_TAX_RATE_BPS` to
+the actual tax rate included in the configured plan amount (for example, 1800
+for 18%, or 0 when no tax is collected). Do not infer tax registration or change
+the price to add tax without checking merchant requirements.
+
+Captured payments are reported through durable, idempotent MongoDB jobs after
+SDK verification or signed webhooks. Reconciliation also scans provider-paid
+invoices to recover missed reports. Renewals reference the initial external
+transaction; processed refunds are reported separately. Website checkout is
+kept separate and does not gain a Play choice token from a later Android flow.
+
+Run `npm run check:billing` inside the deployed container. This is read-only:
+it checks the Razorpay plan, external-transaction API access, and RTDN settings.
+It does not create a transaction or charge a customer. Monitor authenticated
+`GET /api/v1/internal/queue/reporting-status`; `failed` or `overdue` greater than
+zero requires intervention. Retry failed jobs with the existing internal retry
+endpoint after correcting the cause. Google requires reporting within 24 hours.
+
+Configure authenticated Pub/Sub push at
+`https://billing.merigf.com/api/v1/webhooks/google-play/rtdn` using
+`GOOGLE_PLAY_RTDN_AUDIENCE` and `GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL`.
+Send a Console test notification and verify receipt before production release.
+Test real choice UI via a Play-installed internal-track build, not just adb:
+India Play billing, India Razorpay, non-India Play-only, cancellation, restore,
+pending/failed payments, renewals, and successful external report completion.
+
+## Payment Safety
 
 - Do not put `SUBSCRIPTIONS_API_KEY` in the Android app.
 - Store service account JSON only in server/Coolify env.

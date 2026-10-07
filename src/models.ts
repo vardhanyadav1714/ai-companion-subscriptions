@@ -65,6 +65,7 @@ const subscriptionSchema = new Schema(
     checkoutUrl: { type: String, trim: true, default: "" },
     latestOrderId: { type: String, trim: true, default: "" },
     externalTransactionToken: String,
+    billingAdministrativeArea: String,
     initialExternalTransactionId: String,
     currentStart: { type: Date },
     currentEnd: { type: Date },
@@ -128,6 +129,7 @@ export type SubscriptionDocument = {
   checkoutUrl?: string;
   latestOrderId?: string;
   externalTransactionToken?: string;
+  billingAdministrativeArea?: string;
   initialExternalTransactionId?: string;
   currentStart?: Date;
   currentEnd?: Date;

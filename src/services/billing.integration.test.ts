@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import mongoose from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
-const providers = vi.hoisted(() => ({ play: vi.fn(), subscription: vi.fn(), payment: vi.fn(), refund: vi.fn(), invoice: vi.fn(), create: vi.fn(), cancel: vi.fn() }));
+const providers = vi.hoisted(() => ({ play: vi.fn(), subscription: vi.fn(), payment: vi.fn(), refund: vi.fn(), invoice: vi.fn(), create: vi.fn(), cancel: vi.fn(), paidInvoices: vi.fn() }));
 vi.mock("../providers/google-play.js", () => ({
   isGooglePlayConfigured: () => true, fetchGooglePlaySubscriptionPurchase: providers.play
 }));
@@ -11,6 +11,7 @@ vi.mock("../providers/razorpay.js", () => ({
   fetchRazorpayPayment: providers.payment, fetchRazorpayInvoice: providers.invoice, fetchRazorpayRefund: providers.refund,
   createRazorpaySubscription: providers.create, validateRazorpayPlan: async () => {},
   cancelRazorpaySubscription: providers.cancel,
+  fetchPaidSubscriptionInvoices: providers.paidInvoices,
   verifyRazorpayCheckoutSignature: () => true, verifyRazorpayWebhookSignature: () => true
 }));
 
@@ -37,6 +38,7 @@ beforeAll(async () => {
   process.env.GOOGLE_PLAY_RTDN_AUDIENCE = "";
   process.env.GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL = "";
   process.env.GOOGLE_PLAY_PACKAGE_NAME = "com.eva.ai";
+  process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON = "{}";
   process.env.GOOGLE_PLAY_SUBSCRIPTION_PRODUCT_ID = "eva_premium_monthly";
   process.env.GOOGLE_PLAY_BASE_PLAN_ID = "monthly";
   process.env.PLAN_AMOUNT = "49900";
@@ -60,6 +62,7 @@ beforeEach(async () => {
     await mongoose.connection.db!.collection(name).deleteMany({});
   }
   providers.play.mockResolvedValue(activePurchase());
+  providers.paidInvoices.mockResolvedValue([]);
 });
 
 afterAll(async () => {
@@ -211,6 +214,45 @@ describe("billing persistence and lifecycle", () => {
     return { remote, payment };
   }
 
+  it("queues SDK-confirmed alternative payment reporting once without waiting for a webhook", async () => {
+    const { payment } = await razorpayReceipt();
+    await models.SubscriptionModel.updateOne({ providerSubscriptionId: "sub_test" }, { $set: {
+      externalTransactionToken: "choice-token", billingAdministrativeArea: "UTTAR PRADESH"
+    } });
+    const input = { userId: "account-a", razorpayPaymentId: payment.id, razorpaySubscriptionId: "sub_test", razorpaySignature: "verified" };
+    await service.confirmRazorpayPayment(input);
+    await service.confirmRazorpayPayment(input);
+    expect(await queue.QueueJobModel.countDocuments({ jobType: "external_transaction", idempotencyKey: "external-pay_test" })).toBe(1);
+  });
+
+  it("recovers missed Razorpay payment reports from verified subscription invoices", async () => {
+    const { payment } = await razorpayReceipt();
+    await models.SubscriptionModel.updateOne({ providerSubscriptionId: "sub_test" }, { $set: {
+      externalTransactionToken: "choice-token", billingAdministrativeArea: "UTTAR PRADESH"
+    } });
+    providers.paidInvoices.mockResolvedValue([{ payment_id: payment.id, created_at: payment.created_at }]);
+    await service.syncSubscription({ userId: "account-a" });
+    await service.syncSubscription({ userId: "account-a" });
+    expect(await queue.QueueJobModel.countDocuments({ jobType: "external_transaction" })).toBe(1);
+    expect(providers.paidInvoices).toHaveBeenCalledWith("sub_test");
+  });
+
+  it("never reuses a website checkout for a Google Play billing-choice token", async () => {
+    const { env } = await import("../config/env.js");
+    env.GOOGLE_PLAY_ALTERNATIVE_BILLING_ENABLED = true;
+    try {
+      const created = { id: "sub_choice", plan_id: "plan_test", status: "created", short_url: "https://rzp.io/choice", notes: { userId: "account-a" } };
+      providers.create.mockResolvedValue(created);
+      await models.SubscriptionModel.create({ userId: "account-a", provider: "razorpay", providerSubscriptionId: "sub_web", planId: "premium", status: "created", checkoutUrl: "https://rzp.io/web", providerPayload: { plan_id: "plan_test" } });
+      const result = await service.createRazorpayCheckout({ userId: "account-a", externalTransactionToken: "choice-token", billingCountryCode: "IN", billingAdministrativeArea: "DELHI" });
+      expect(result.checkoutUrl).toBe("https://rzp.io/choice");
+      expect(providers.create).toHaveBeenCalledTimes(1);
+      expect((await models.SubscriptionModel.findOne({ providerSubscriptionId: "sub_choice" }))?.billingAdministrativeArea).toBe("DELHI");
+      await service.createRazorpayCheckout({ userId: "account-a", externalTransactionToken: "choice-token", billingCountryCode: "IN", billingAdministrativeArea: "DELHI" });
+      expect(providers.create).toHaveBeenCalledTimes(1);
+    } finally { env.GOOGLE_PLAY_ALTERNATIVE_BILLING_ENABLED = false; }
+  });
+
   it("cancels only the user's own Razorpay renewal and preserves paid time", async () => {
     const { remote } = await razorpayReceipt();
     providers.cancel.mockResolvedValue({ ...remote, status: "cancelled" });
@@ -265,6 +307,20 @@ describe("billing persistence and lifecycle", () => {
       expect(providers.play).not.toHaveBeenCalled();
     } finally { await app.close(); }
   }, 15_000);
+
+  it("exposes reporting deadline failures only to internal monitoring", async () => {
+    await queue.QueueJobModel.create({ jobType: "external_transaction", idempotencyKey: "old-report", status: "failed", payload: {
+      payment: { created_at: Math.floor(Date.now() / 1000) - 90000 }
+    } });
+    const { buildApp } = await import("../app.js");
+    const app = await buildApp();
+    try {
+      const url = "/api/v1/internal/queue/reporting-status";
+      expect((await app.inject({ method: "GET", url })).statusCode).toBe(401);
+      const response = await app.inject({ method: "GET", url, headers: { "x-subscriptions-key": "test-only-internal-key" } });
+      expect(response.json().data).toEqual({ outstanding: 1, failed: 1, overdue: 1, healthy: false });
+    } finally { await app.close(); }
+  });
 
   it("reconciles a stale subscription through the durable queue after a missed notification", async () => {
     await confirm();

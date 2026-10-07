@@ -7,6 +7,7 @@ import { serviceUnavailable } from "../errors.js";
 import { SubscriptionModel } from "../models.js";
 import { withBillingLock } from "../services/billing-lock.js";
 import { fetchInitialRazorpayPayment } from "./razorpay.js";
+import { indiaAdministrativeAreas } from "../services/alternative-billing.js";
 
 const androidPublisherScope = "https://www.googleapis.com/auth/androidpublisher";
 
@@ -31,6 +32,9 @@ async function reportExternalTransactionUnlocked(payload: Record<string, unknown
   const subscription = await SubscriptionModel.findById(String(payload.subscriptionId));
   const payment = payload.payment as Record<string, unknown>;
   if (!subscription?.externalTransactionToken) throw new Error("Missing external transaction token");
+  if (env.GOOGLE_PLAY_TAX_REGION !== "IN" || !indiaAdministrativeAreas.includes(subscription.billingAdministrativeArea as typeof indiaAdministrativeAreas[number])) {
+    throw new Error("Missing valid Indian billing state for external reporting");
+  }
   const id = `eva-${String(payment.id)}`;
   let initialPayment;
   if (!subscription.initialExternalTransactionId) {
@@ -56,7 +60,7 @@ async function reportExternalTransactionUnlocked(payload: Record<string, unknown
     originalPreTaxAmount: { priceMicros: String(preTax), currency: String(payment.currency) },
     originalTaxAmount: { priceMicros: String(total - preTax), currency: String(payment.currency) },
     transactionTime: new Date(timestamp * 1000).toISOString(),
-    userTaxAddress: { regionCode: env.GOOGLE_PLAY_TAX_REGION },
+    userTaxAddress: { regionCode: "IN", administrativeArea: subscription.billingAdministrativeArea },
     recurringTransaction: {
       externalSubscription: { subscriptionType: "RECURRING" },
       ...(initial === id ? { externalTransactionToken: subscription.externalTransactionToken } : { initialExternalTransactionId: initial })
@@ -152,6 +156,15 @@ export type GooglePlaySubscriptionPurchase = {
 
 export function isGooglePlayConfigured(): boolean {
   return Boolean(env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON.trim());
+}
+
+export async function checkExternalReportingAccess(): Promise<{ accessible: boolean; statusCode: number }> {
+  const url = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${encodeURIComponent(env.GOOGLE_PLAY_PACKAGE_NAME)}/externalTransactions/eva-readiness-check`;
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${await getGoogleAccessToken()}` }, signal: AbortSignal.timeout(15000)
+  });
+  await response.body?.cancel();
+  return { accessible: response.ok || response.status === 404, statusCode: response.status };
 }
 
 export async function fetchGooglePlaySubscriptionPurchase(

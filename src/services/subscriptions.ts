@@ -19,6 +19,7 @@ import {
   fetchRazorpayPayment,
   fetchRazorpayInvoice,
   fetchRazorpayRefund,
+  fetchPaidSubscriptionInvoices,
   cancelRazorpaySubscription,
   isRazorpayConfigured,
   validateRazorpayPlan,
@@ -35,6 +36,8 @@ import { enqueuePaymentConfirmation, enqueueJob } from "./confirmation-queue.js"
 import { claimGooglePlayOwnership, findGooglePlayOwner } from "./purchase-ownership.js";
 import { decodePlayNotification } from "./play-notifications.js";
 import { withBillingLock } from "./billing-lock.js";
+import { validateAlternativeBilling } from "./alternative-billing.js";
+import { QueueJobModel } from "../models/queue-job.model.js";
 
 export type Entitlement = {
   active: boolean;
@@ -87,6 +90,8 @@ export async function getEntitlement(userId: string): Promise<Entitlement> {
 
 export async function createRazorpayCheckout(input: {
   externalTransactionToken?: string;
+  billingCountryCode?: string;
+  billingAdministrativeArea?: string;
   userId: string;
   email?: string;
   name?: string;
@@ -95,7 +100,7 @@ export async function createRazorpayCheckout(input: {
   if (!isRazorpayConfigured()) {
     throw serviceUnavailable("Razorpay checkout is disabled");
   }
-  if (input.externalTransactionToken && !env.GOOGLE_PLAY_ALTERNATIVE_BILLING_ENABLED) throw badRequest("Alternative billing is not enabled");
+  validateAlternativeBilling(input);
   await upsertUser(input);
   await ensureDefaultPlan();
 
@@ -105,20 +110,20 @@ export async function createRazorpayCheckout(input: {
   const existing = await SubscriptionModel.findOne({
     userId: input.userId,
     provider: "razorpay",
+    ...(input.externalTransactionToken ? { externalTransactionToken: input.externalTransactionToken } : { externalTransactionToken: { $exists: false } }),
     status: { $in: ["created", "pending", "authenticated", "active"] }
   }).sort({ updatedAt: -1 });
 
   const existingPlan = (existing?.providerPayload as RazorpaySubscription | undefined)?.plan_id;
   if (existing?.checkoutUrl && !isExpired(existing.currentEnd) && existingPlan === env.RAZORPAY_SUBSCRIPTION_PLAN_ID) {
-    if (input.externalTransactionToken && !existing.externalTransactionToken) {
-      await SubscriptionModel.updateOne({ _id: existing._id }, { $set: { externalTransactionToken: input.externalTransactionToken } });
-    }
     return { checkoutUrl: existing.checkoutUrl, subscription: serializeEntitlement(existing) };
   }
 
   const created = await createRazorpaySubscription(input);
   const subscription = await upsertRazorpaySubscription(input.userId, created);
-  if (input.externalTransactionToken) await SubscriptionModel.updateOne({ _id: subscription._id }, { $set: { externalTransactionToken: input.externalTransactionToken } });
+  if (input.externalTransactionToken) await SubscriptionModel.updateOne({ _id: subscription._id }, { $set: {
+    externalTransactionToken: input.externalTransactionToken, billingAdministrativeArea: input.billingAdministrativeArea
+  } });
   return {
     checkoutUrl: created.short_url ?? "",
     subscription: serializeEntitlement(subscription)
@@ -169,6 +174,9 @@ export async function confirmRazorpayPayment(input: {
     },
     { upsert: true }
   );
+  if (subscription.externalTransactionToken) await enqueueJob("external_transaction", `external-${payment.id}`, {
+    subscriptionId: subscription._id.toString(), payment
+  });
   await enqueueSubscriptionConfirmation(`razorpay:payment:${input.razorpayPaymentId}`, "payment.captured", subscription);
   return serializeEntitlement(subscription);
 }
@@ -236,6 +244,17 @@ export async function syncSubscription(input: {
   if (subscription.provider === "razorpay" && subscription.providerSubscriptionId) {
     const remote = await fetchRazorpaySubscription(subscription.providerSubscriptionId);
     const updated = await upsertRazorpaySubscription(subscription.userId, remote);
+    if (updated.externalTransactionToken) {
+      const invoices = await fetchPaidSubscriptionInvoices(subscription.providerSubscriptionId);
+      for (const invoice of invoices) {
+        const key = `external-${invoice.payment_id}`;
+        if (await QueueJobModel.exists({ jobType: "external_transaction", idempotencyKey: key })) continue;
+        const payment = await fetchRazorpayPayment(invoice.payment_id);
+        if (payment.status === "captured" && payment.amount === env.PLAN_AMOUNT && payment.currency === env.PLAN_CURRENCY) {
+          await enqueueJob("external_transaction", key, { subscriptionId: updated._id.toString(), payment });
+        }
+      }
+    }
     await enqueueSubscriptionConfirmation(`sync:${updated._id}`, "subscription.synced", updated);
     return getEntitlement(input.userId);
   }
@@ -366,12 +385,12 @@ export async function processRazorpayWebhook(input: {
     });
   }
 
-  await enqueueSubscriptionConfirmation(eventId, eventType, subscription);
   if (subscription.externalTransactionToken && paymentEntity?.status === "captured" && paymentEntity.amount === env.PLAN_AMOUNT && paymentEntity.id) {
     await enqueueJob("external_transaction", `external-${paymentEntity.id}`, {
       subscriptionId: subscription._id.toString(), payment: paymentEntity
     });
   }
+  await enqueueSubscriptionConfirmation(eventId, eventType, subscription);
 
   if (subscription.status === "halted") {
     // Halted (payment pending): nudge the user to fix the payment method.

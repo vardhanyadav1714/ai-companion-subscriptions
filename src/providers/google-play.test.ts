@@ -20,7 +20,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.stubGlobal("fetch", fetchMock);
   env.GOOGLE_PLAY_TAX_RATE_BPS = 0;
-  models.subscription.mockResolvedValue({ _id: "sub_1", providerSubscriptionId: "sub_provider", externalTransactionToken: "test-only-choice-token", initialExternalTransactionId: "eva-pay_1" });
+  models.subscription.mockResolvedValue({ _id: "sub_1", providerSubscriptionId: "sub_provider", externalTransactionToken: "test-only-choice-token", billingAdministrativeArea: "UTTAR PRADESH", initialExternalTransactionId: "eva-pay_1" });
   models.earliest.mockResolvedValue({ providerPaymentId: "pay_1" });
   models.initialPayment.mockResolvedValue(payment);
 });
@@ -34,6 +34,7 @@ describe("external billing reporting", () => {
     expect(body.originalPreTaxAmount).toEqual({ priceMicros: "499000000", currency: "INR" });
     expect(body.recurringTransaction.externalTransactionToken).toBe("test-only-choice-token");
     expect(body.transactionTime).toBe(new Date(payment.created_at * 1000).toISOString());
+    expect(body.userTaxAddress).toEqual({ regionCode: "IN", administrativeArea: "UTTAR PRADESH" });
   });
   it("does not report a renewal until the first transaction exists", async () => {
     fetchMock.mockResolvedValue(new Response("", { status: 404 }));
@@ -41,7 +42,7 @@ describe("external billing reporting", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
   it("recovers the provider's first payment when a renewal webhook arrives first", async () => {
-    models.subscription.mockResolvedValueOnce({ _id: "sub_1", providerSubscriptionId: "sub_provider", externalTransactionToken: "test-only-choice-token" });
+    models.subscription.mockResolvedValueOnce({ _id: "sub_1", providerSubscriptionId: "sub_provider", externalTransactionToken: "test-only-choice-token", billingAdministrativeArea: "UTTAR PRADESH" });
     fetchMock.mockResolvedValueOnce(new Response("", { status: 404 }))
       .mockResolvedValueOnce(new Response("{}"))
       .mockResolvedValueOnce(new Response("{}"))
@@ -57,6 +58,19 @@ describe("external billing reporting", () => {
   it("rejects invented or future payment timestamps", async () => {
     await expect(reportExternalTransaction({ subscriptionId: "sub_1", payment: { ...payment, created_at: Date.now() / 1000 + 10000 } })).rejects.toThrow("timestamp");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("does not invent a billing state for an incomplete transaction", async () => {
+    models.subscription.mockResolvedValueOnce({ externalTransactionToken: "test-only-choice-token" });
+    await expect(reportExternalTransaction({ subscriptionId: "sub_1", payment })).rejects.toThrow("billing state");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("splits tax-inclusive payments without losing micros", async () => {
+    env.GOOGLE_PLAY_TAX_RATE_BPS = 1800;
+    fetchMock.mockResolvedValueOnce(new Response("", { status: 404 })).mockResolvedValueOnce(new Response("{}"));
+    await reportExternalTransaction({ subscriptionId: "sub_1", payment });
+    const body = JSON.parse(fetchMock.mock.calls[1]![1].body);
+    expect(Number(body.originalPreTaxAmount.priceMicros) + Number(body.originalTaxAmount.priceMicros)).toBe(499000000);
+    expect(Number(body.originalTaxAmount.priceMicros)).toBeGreaterThan(0);
   });
   it("validates an existing report before treating it as a successful replay", async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ originalPreTaxAmount: { priceMicros: "1", currency: "INR" }, originalTaxAmount: { priceMicros: "0" } })));
