@@ -74,12 +74,26 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     requireInternalKey(request);
     return success(await QueueJobModel.aggregate([{ $group: { _id: { type: "$jobType", status: "$status" }, count: { $sum: 1 } } }]));
   });
+  app.get("/api/v1/internal/queue/failed", async request => {
+    requireInternalKey(request);
+    const query = z.object({
+      limit: z.coerce.number().int().min(1).max(100).default(20),
+      jobType: z.enum(["payment_confirmation", "external_transaction", "external_refund", "razorpay_webhook", "google_play_rtdn", "subscription_sync", "google_play_acknowledge"]).optional()
+    }).parse(request.query);
+    const jobs = await QueueJobModel.find({ status: "failed", ...(query.jobType ? { jobType: query.jobType } : {}) })
+      .sort({ updatedAt: -1 }).limit(query.limit).select("_id jobType attempts maxAttempts lastError updatedAt").lean();
+    return success(jobs.map(job => ({
+      id: job._id.toString(), jobType: job.jobType, attempts: job.attempts, maxAttempts: job.maxAttempts,
+      failure: /^Confirmation endpoint returned \d{3}$/.test(job.lastError ?? "") ? job.lastError : "Processing failed; inspect private worker logs"
+    })));
+  });
   app.post("/api/v1/internal/queue/:id/retry", async request => {
     requireInternalKey(request);
     const { id } = z.object({ id: z.string().regex(/^[a-f\d]{24}$/i) }).parse(request.params);
-    const result = await QueueJobModel.updateOne({ _id: id, status: "failed" }, {
-      $set: { status: "pending", attempts: 0, nextAttemptAt: new Date(), lastError: "" }
-    });
+    const result = await QueueJobModel.updateOne({ _id: id, status: "failed" }, [{
+      $set: { status: "pending", maxAttempts: { $add: ["$attempts", env.QUEUE_MAX_ATTEMPTS] },
+        lockedUntil: null, nextAttemptAt: new Date(), lastError: "" }
+    }]);
     return success({ retried: result.modifiedCount === 1 });
   });
   app.get("/health", async (_request, reply) => {
