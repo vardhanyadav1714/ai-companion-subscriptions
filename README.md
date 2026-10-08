@@ -489,6 +489,45 @@ pending/failed payments, renewals, and successful external report completion.
 
 ## Payment Safety
 
+### Recover Failed Jobs
+
+Use the server-only `X-Subscriptions-Key` header for both endpoints:
+
+- `GET /api/v1/internal/queue/failed?jobType=payment_confirmation&limit=20`
+- `POST /api/v1/internal/queue/<id>/retry`
+
+Fix the underlying configuration before retrying. The list omits payment
+payloads and redacts unstructured provider errors. Replay only changes failed
+jobs to pending; completed/processing jobs are not reset. Attempt counters remain
+monotonic to preserve worker fencing. The worker picks up pending jobs; verify
+completion through `GET /api/v1/internal/queue/status` and receipt delivery.
+
+### Authenticated RTDN Requirements
+
+The Google Play service account does not automatically have Pub/Sub administration
+access. In Google Cloud, locate the existing RTDN push subscription and:
+
+1. Create/select a dedicated push identity, such as `eva-play-rtdn`. No JSON key
+   is needed for this account.
+2. Enable authentication on the push subscription and select that identity.
+3. Set endpoint and audience to
+   `https://billing.merigf.com/api/v1/webhooks/google-play/rtdn`, without a token query.
+4. Grant the Pub/Sub service agent
+   `service-<PROJECT_NUMBER>@gcp-sa-pubsub.iam.gserviceaccount.com`
+   `roles/iam.serviceAccountTokenCreator` on the selected push service account.
+   The principal editing the subscription also needs `iam.serviceAccounts.actAs`.
+5. Set both `GOOGLE_PLAY_RTDN_AUDIENCE` and
+   `GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL` on the billing API and worker;
+   deploy and send a Play Console test notification.
+
+Coordinate steps 2-5 as a migration: neither partially configured server settings
+nor changing only the Cloud push identity is a completed migration. Keep the
+working legacy route until ready. Once OIDC settings are active, the backend
+rejects legacy query-token authentication. Verify queued RTDN jobs are processed
+before removing the old shared secret.
+
+Reference: https://docs.cloud.google.com/pubsub/docs/authenticate-push-subscriptions
+
 - Do not put `SUBSCRIPTIONS_API_KEY` in the Android app.
 - Store service account JSON only in server/Coolify env.
 - Verify Google Play purchases on the backend.
