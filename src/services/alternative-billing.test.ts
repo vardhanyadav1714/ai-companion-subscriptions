@@ -39,11 +39,15 @@ describe("India user-choice billing guard", () => {
   it("does not accept choice metadata without a Google token", () => {
     expect(() => validateAlternativeBilling({ billingCountryCode: "IN" })).toThrow("token is required");
   });
-  it("blocks checkout until the explicit tax rate and authenticated RTDN are configured", () => {
+  it("blocks checkout until the explicit tax rate is configured", () => {
     delete process.env.GOOGLE_PLAY_TAX_RATE_BPS;
     expect(() => validateAlternativeBilling(choice)).toThrow("not configured");
     process.env.GOOGLE_PLAY_TAX_RATE_BPS = "0";
+    expect(() => validateAlternativeBilling(choice)).not.toThrow();
+  });
+  it("does not gate Razorpay reporting on unrelated Play purchase push settings", () => {
     env.GOOGLE_PLAY_RTDN_AUDIENCE = "";
-    expect(() => validateAlternativeBilling(choice)).toThrow("not configured");
+    env.GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL = "";
+    expect(() => validateAlternativeBilling(choice)).not.toThrow();
   });
 });

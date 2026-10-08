@@ -12,7 +12,7 @@ export const indiaAdministrativeAreas = [
 export function isAlternativeBillingReady(): boolean {
   return env.GOOGLE_PLAY_ALTERNATIVE_BILLING_ENABLED && env.RAZORPAY_ENABLED &&
     Boolean(env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON && env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET && env.RAZORPAY_WEBHOOK_SECRET &&
-      env.GOOGLE_PLAY_RTDN_AUDIENCE && env.GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL && process.env.GOOGLE_PLAY_TAX_RATE_BPS?.trim()) &&
+      process.env.GOOGLE_PLAY_TAX_RATE_BPS?.trim()) &&
     env.GOOGLE_PLAY_TAX_REGION === "IN" && env.PLAN_CURRENCY === "INR";
 }
 

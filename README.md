@@ -470,7 +470,10 @@ transaction; processed refunds are reported separately. Website checkout is
 kept separate and does not gain a Play choice token from a later Android flow.
 
 Run `npm run check:billing` inside the deployed container. This is read-only:
-it checks the Razorpay plan, external-transaction API access, and RTDN settings.
+it checks the Razorpay plan and external-transaction API access, and displays
+RTDN configuration separately. Play purchase notifications are not a prerequisite
+for reporting Razorpay transactions; they remain necessary for reliable Play
+subscription lifecycle updates.
 It does not create a transaction or charge a customer. Monitor authenticated
 `GET /api/v1/internal/queue/reporting-status`; `failed` or `overdue` greater than
 zero requires intervention. Retry failed jobs with the existing internal retry

@@ -18,7 +18,7 @@ async function main(): Promise<void> {
     checks.externalReportingHttpStatus = access.statusCode;
   } catch { checks.externalReportingAccessible = false; }
   console.log(JSON.stringify({ readOnly: true, checks }, null, 2));
-  if (!checks.alternativeBillingEnabled || !checks.explicitTaxRateConfigured || !checks.indiaOnly || !checks.razorpayConfigured || !checks.planMatches || !checks.externalReportingAccessible || !checks.authenticatedPushConfigured) process.exitCode = 1;
+  if (!checks.alternativeBillingEnabled || !checks.explicitTaxRateConfigured || !checks.indiaOnly || !checks.razorpayConfigured || !checks.planMatches || !checks.externalReportingAccessible) process.exitCode = 1;
 }
 
 void main().catch(() => { console.error("Billing readiness check could not complete"); process.exitCode = 1; });
