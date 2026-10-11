@@ -533,3 +533,11 @@ Reference: https://docs.cloud.google.com/pubsub/docs/authenticate-push-subscript
 - Verify Google Play purchases on the backend.
 - Verify Razorpay webhooks using the raw request body and `RAZORPAY_WEBHOOK_SECRET`.
 - Webhook events are idempotent, so duplicate provider retries do not double-grant access.
+
+# Worker Monitoring
+
+The standalone worker serves `GET /health` on `HOST:PORT` (default port 3000).
+It returns 503 until its first successful sweep, when MongoDB disconnects, or when
+the last successful sweep is stale; otherwise it returns 200 with a minimal status.
+Configure the worker's Coolify health check to use `/health` and its runtime port.
+Queue failures/lag and external reporting deadlines still need separate alerts.

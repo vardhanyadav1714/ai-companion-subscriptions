@@ -2,6 +2,8 @@ import { env } from "./config/env.js";
 import { connectMongo, disconnectMongo } from "./database/mongodb.js";
 import { Worker } from "bullmq";
 import { Redis } from "ioredis";
+import mongoose from "mongoose";
+import { createWorkerHealthServer } from "./services/worker-health.js";
 import { enqueueDueSubscriptionSyncs } from "./services/subscriptions.js";
 import {
   dispatchDueConfirmationJobs,
@@ -12,6 +14,11 @@ import {
 
 async function start(): Promise<void> {
   await connectMongo();
+  const health = createWorkerHealthServer(() => mongoose.connection.readyState === 1, env.QUEUE_POLL_INTERVAL_MS);
+  await new Promise<void>((resolve, reject) => {
+    health.server.once("error", reject);
+    health.server.listen(env.PORT, env.HOST, resolve);
+  });
   console.info("Eva subscription confirmation worker started");
 
   let stopping = false;
@@ -40,6 +47,7 @@ async function start(): Promise<void> {
       await enqueueDueSubscriptionSyncs();
       await dispatchDueConfirmationJobs();
       await processDueConfirmationJobs();
+      health.markSuccessfulSweep();
     } catch (error) {
       console.error("Confirmation queue sweep failed", error);
     }
@@ -49,6 +57,7 @@ async function start(): Promise<void> {
   redisConnection?.disconnect();
   await closeConfirmationQueue();
   await disconnectMongo();
+  await new Promise<void>(resolve => health.server.close(() => resolve()));
   process.exit(0);
 }
 
