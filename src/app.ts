@@ -8,9 +8,10 @@ import { ZodError } from "zod";
 import { env } from "./config/env.js";
 import { HttpError } from "./errors.js";
 import { registerRoutes } from "./routes.js";
+import { trustedProxySetting } from "./trusted-proxies.js";
 
 export async function buildApp() {
-  const app = Fastify({ logger: { level: env.LOG_LEVEL, redact: ["req.headers.authorization", "req.headers.x-subscriptions-key"] },
+  const app = Fastify({ trustProxy: trustedProxySetting(env.TRUST_PROXY_CIDRS), logger: { level: env.LOG_LEVEL, redact: ["req.headers.authorization", "req.headers.x-subscriptions-key"] },
     disableRequestLogging: true, bodyLimit: 1024 * 1024 });
 
   app.addContentTypeParser("application/json", { parseAs: "buffer" }, (request, body, done) => {

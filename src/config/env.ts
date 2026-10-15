@@ -37,6 +37,7 @@ const envSchema = z.object({
   GOOGLE_PLAY_SUBSCRIPTION_PRODUCT_ID: z.string().trim().min(1).default("eva_premium_monthly"),
   GOOGLE_PLAY_BASE_PLAN_ID: z.string().trim().min(1).default("monthly"),
   GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: z.string().optional().default(""),
+  TRUST_PROXY_CIDRS: z.string().default(""),
   GOOGLE_PLAY_RTDN_TOKEN: z.string().optional().default(""),
   GOOGLE_PLAY_RTDN_AUDIENCE: optionalUrl,
   GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL: z.string().email().or(z.literal("")).default(""),
