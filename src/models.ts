@@ -67,6 +67,9 @@ const subscriptionSchema = new Schema(
     externalTransactionToken: String,
     billingAdministrativeArea: String,
     initialExternalTransactionId: String,
+    razorpayMerchantKeyId: String,
+    billingAmount: { type: Number, min: 1 },
+    billingCurrency: String,
     currentStart: { type: Date },
     currentEnd: { type: Date },
     cancelledAt: { type: Date },
@@ -131,6 +134,9 @@ export type SubscriptionDocument = {
   externalTransactionToken?: string;
   billingAdministrativeArea?: string;
   initialExternalTransactionId?: string;
+  razorpayMerchantKeyId?: string;
+  billingAmount?: number;
+  billingCurrency?: string;
   currentStart?: Date;
   currentEnd?: Date;
   cancelledAt?: Date;

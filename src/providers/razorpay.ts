@@ -3,6 +3,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 import { env } from "../config/env.js";
 import { serviceUnavailable } from "../errors.js";
+import { razorpayProfile } from "./razorpay-context.js";
 
 export type RazorpaySubscription = {
   id: string;
@@ -18,13 +19,15 @@ export type RazorpaySubscription = {
 };
 
 export function isRazorpayConfigured(): boolean {
-  return Boolean(env.RAZORPAY_ENABLED && env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET);
+  const profile = razorpayProfile();
+  return Boolean(env.RAZORPAY_ENABLED && profile.keyId && profile.keySecret);
 }
 
 export async function validateRazorpayPlan(): Promise<void> {
-  if (!env.RAZORPAY_SUBSCRIPTION_PLAN_ID || !env.RAZORPAY_WEBHOOK_SECRET) throw serviceUnavailable("Razorpay plan and webhook must be configured before checkout");
-  const remote = await razorpayRequest<{ id: string; period: string; interval: number; item?: { amount: number; currency: string; active?: boolean } }>("GET", `/plans/${encodeURIComponent(env.RAZORPAY_SUBSCRIPTION_PLAN_ID)}`);
-  if (remote.id !== env.RAZORPAY_SUBSCRIPTION_PLAN_ID || remote.period !== env.PLAN_INTERVAL || remote.interval !== 1 || remote.item?.amount !== env.PLAN_AMOUNT || remote.item?.currency !== env.PLAN_CURRENCY || remote.item?.active === false) {
+  const profile = razorpayProfile();
+  if (!profile.planId || !profile.webhookSecret) throw serviceUnavailable("Razorpay plan and webhook must be configured before checkout");
+  const remote = await razorpayRequest<{ id: string; period: string; interval: number; item?: { amount: number; currency: string; active?: boolean } }>("GET", `/plans/${encodeURIComponent(profile.planId)}`);
+  if (remote.id !== profile.planId || remote.period !== env.PLAN_INTERVAL || remote.interval !== 1 || remote.item?.amount !== profile.amount || remote.item?.currency !== profile.currency || remote.item?.active === false) {
     throw serviceUnavailable("The payment plan does not match the advertised price. Checkout is unavailable.");
   }
 }
@@ -34,9 +37,10 @@ export async function createRazorpaySubscription(input: {
   email?: string;
   name?: string;
 }): Promise<RazorpaySubscription> {
+  const profile = razorpayProfile();
   return razorpayRequest<RazorpaySubscription>("POST", "/subscriptions", {
-    plan_id: env.RAZORPAY_SUBSCRIPTION_PLAN_ID,
-    total_count: env.RAZORPAY_SUBSCRIPTION_TOTAL_COUNT,
+    plan_id: profile.planId,
+    total_count: profile.totalCount,
     quantity: 1,
     customer_notify: true,
     notes: {
@@ -82,13 +86,14 @@ export async function fetchInitialRazorpayPayment(subscriptionId: string): Promi
 }
 
 export async function fetchPaidSubscriptionInvoices(subscriptionId: string): Promise<Array<{ payment_id: string; created_at: number }>> {
+  const profile = razorpayProfile();
   const paid: Array<{ payment_id: string; created_at: number }> = [];
   for (let skip = 0; skip < 1000; skip += 100) {
     const page = await razorpayRequest<{ items: Array<{ status: string; amount: number; payment_id?: string; created_at: number }> }>(
       "GET", `/invoices?subscription_id=${encodeURIComponent(subscriptionId)}&count=100&skip=${skip}`
     );
     for (const invoice of page.items) {
-      if (invoice.status === "paid" && invoice.amount === env.PLAN_AMOUNT && invoice.payment_id) {
+      if (invoice.status === "paid" && invoice.amount === profile.amount && invoice.payment_id) {
         paid.push({ payment_id: invoice.payment_id, created_at: invoice.created_at });
       }
     }
@@ -104,14 +109,16 @@ export function verifyRazorpayCheckoutSignature(input: {
   subscriptionId: string;
   signature: string;
 }): boolean {
-  if (!env.RAZORPAY_KEY_SECRET) return false;
+  const secret = razorpayProfile().keySecret;
+  if (!secret) return false;
   const body = `${input.paymentId}|${input.subscriptionId}`;
-  return compareHmac(body, env.RAZORPAY_KEY_SECRET, input.signature);
+  return compareHmac(body, secret, input.signature);
 }
 
 export function verifyRazorpayWebhookSignature(rawBody: Buffer, signature: string): boolean {
-  if (!env.RAZORPAY_WEBHOOK_SECRET) return false;
-  return compareHmac(rawBody, env.RAZORPAY_WEBHOOK_SECRET, signature);
+  const secret = razorpayProfile().webhookSecret;
+  if (!secret) return false;
+  return compareHmac(rawBody, secret, signature);
 }
 
 function compareHmac(body: string | Buffer, secret: string, supplied: string): boolean {
@@ -129,12 +136,13 @@ async function razorpayRequest<T>(
   if (!isRazorpayConfigured()) {
     throw serviceUnavailable("Razorpay is not configured");
   }
+  const profile = razorpayProfile();
 
   const response = await fetch(`https://api.razorpay.com/v1${path}`, {
     method,
     signal: AbortSignal.timeout(15000),
     headers: {
-      Authorization: `Basic ${Buffer.from(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`).toString("base64")}`,
+      Authorization: `Basic ${Buffer.from(`${profile.keyId}:${profile.keySecret}`).toString("base64")}`,
       "Content-Type": "application/json"
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) })

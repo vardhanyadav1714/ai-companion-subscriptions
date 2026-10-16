@@ -38,6 +38,7 @@ import { decodePlayNotification } from "./play-notifications.js";
 import { withBillingLock } from "./billing-lock.js";
 import { validateAlternativeBilling } from "./alternative-billing.js";
 import { QueueJobModel } from "../models/queue-job.model.js";
+import { checkoutRazorpayProfile, storedRazorpayProfile, webhookRazorpayProfile, razorpayWebhookProfiles, razorpayProfile, withRazorpayProfile } from "../providers/razorpay-context.js";
 
 export type Entitlement = {
   active: boolean;
@@ -96,7 +97,7 @@ export async function createRazorpayCheckout(input: {
   email?: string;
   name?: string;
 }): Promise<{ checkoutUrl: string; subscription: Entitlement }> {
-  return withBillingLock(`checkout:${input.userId}`, async () => {
+  return withRazorpayProfile(checkoutRazorpayProfile(input.userId), () => withBillingLock(`checkout:${input.userId}`, async () => {
   if (!isRazorpayConfigured()) {
     throw serviceUnavailable("Razorpay checkout is disabled");
   }
@@ -115,7 +116,8 @@ export async function createRazorpayCheckout(input: {
   }).sort({ updatedAt: -1 });
 
   const existingPlan = (existing?.providerPayload as RazorpaySubscription | undefined)?.plan_id;
-  if (existing?.checkoutUrl && !isExpired(existing.currentEnd) && existingPlan === env.RAZORPAY_SUBSCRIPTION_PLAN_ID) {
+  if (existing?.checkoutUrl && !isExpired(existing.currentEnd) && existingPlan === razorpayProfile().planId &&
+      storedRazorpayProfile(existing).keyId === razorpayProfile().keyId) {
     return { checkoutUrl: existing.checkoutUrl, subscription: serializeEntitlement(existing) };
   }
 
@@ -128,7 +130,7 @@ export async function createRazorpayCheckout(input: {
     checkoutUrl: created.short_url ?? "",
     subscription: serializeEntitlement(subscription)
   };
-  });
+  }));
 }
 
 export async function confirmRazorpayPayment(input: {
@@ -137,6 +139,9 @@ export async function confirmRazorpayPayment(input: {
   razorpaySubscriptionId: string;
   razorpaySignature: string;
 }): Promise<Entitlement> {
+  const stored = await SubscriptionModel.findOne({ provider: "razorpay", providerSubscriptionId: input.razorpaySubscriptionId });
+  if (stored && stored.userId !== input.userId) throw forbidden("This Razorpay subscription belongs to another account");
+  return withRazorpayProfile(stored ? storedRazorpayProfile(stored) : checkoutRazorpayProfile(input.userId), async () => {
   if (
     !verifyRazorpayCheckoutSignature({
       paymentId: input.razorpayPaymentId,
@@ -149,7 +154,7 @@ export async function confirmRazorpayPayment(input: {
 
   const remote = await fetchRazorpaySubscription(input.razorpaySubscriptionId);
   const payment = await fetchRazorpayPayment(input.razorpayPaymentId);
-  if (payment.status !== "captured" || payment.amount !== env.PLAN_AMOUNT || payment.currency !== env.PLAN_CURRENCY) {
+  if (payment.status !== "captured" || payment.amount !== razorpayProfile().amount || payment.currency !== razorpayProfile().currency) {
     throw badRequest("Payment has not been captured for the configured plan amount");
   }
   if (payment.invoice_id) {
@@ -179,6 +184,7 @@ export async function confirmRazorpayPayment(input: {
   });
   await enqueueSubscriptionConfirmation(`razorpay:payment:${input.razorpayPaymentId}`, "payment.captured", subscription);
   return serializeEntitlement(subscription);
+  });
 }
 
 export async function cancelSubscription(userId: string): Promise<Entitlement> {
@@ -188,12 +194,14 @@ export async function cancelSubscription(userId: string): Promise<Entitlement> {
     const subscription = await SubscriptionModel.findOne({ userId, provider: "razorpay", providerSubscriptionId: entitlement.providerSubscriptionId });
     if (!subscription?.providerSubscriptionId) throw badRequest("No Razorpay subscription is available to cancel");
     if (subscription.cancelAtPeriodEnd || subscription.status === "cancelled") return entitlement;
-    const remote = await cancelRazorpaySubscription(subscription.providerSubscriptionId);
+    return withRazorpayProfile(storedRazorpayProfile(subscription), async () => {
+    const remote = await cancelRazorpaySubscription(subscription.providerSubscriptionId!);
     await upsertRazorpaySubscription(userId, remote);
     await SubscriptionModel.updateOne({ _id: subscription._id }, { $set: { cancelAtPeriodEnd: true, autoRenew: false } });
     const updated = await SubscriptionModel.findById(subscription._id);
     if (updated) await enqueueSubscriptionConfirmation(`cancel:${subscription._id}`, "subscription.cancelled", updated);
     return getEntitlement(userId);
+    });
   });
 }
 
@@ -242,21 +250,23 @@ export async function syncSubscription(input: {
   }
 
   if (subscription.provider === "razorpay" && subscription.providerSubscriptionId) {
-    const remote = await fetchRazorpaySubscription(subscription.providerSubscriptionId);
+    return withRazorpayProfile(storedRazorpayProfile(subscription), async () => {
+    const remote = await fetchRazorpaySubscription(subscription.providerSubscriptionId!);
     const updated = await upsertRazorpaySubscription(subscription.userId, remote);
     if (updated.externalTransactionToken) {
-      const invoices = await fetchPaidSubscriptionInvoices(subscription.providerSubscriptionId);
+      const invoices = await fetchPaidSubscriptionInvoices(subscription.providerSubscriptionId!);
       for (const invoice of invoices) {
         const key = `external-${invoice.payment_id}`;
         if (await QueueJobModel.exists({ jobType: "external_transaction", idempotencyKey: key })) continue;
         const payment = await fetchRazorpayPayment(invoice.payment_id);
-        if (payment.status === "captured" && payment.amount === env.PLAN_AMOUNT && payment.currency === env.PLAN_CURRENCY) {
+        if (payment.status === "captured" && payment.amount === razorpayProfile().amount && payment.currency === razorpayProfile().currency) {
           await enqueueJob("external_transaction", key, { subscriptionId: updated._id.toString(), payment });
         }
       }
     }
     await enqueueSubscriptionConfirmation(`sync:${updated._id}`, "subscription.synced", updated);
     return getEntitlement(input.userId);
+    });
   }
 
   return serializeEntitlement(subscription);
@@ -296,16 +306,22 @@ export async function processRazorpayWebhook(input: {
   eventId?: string;
   payload: Record<string, unknown>;
 }, queued = false): Promise<{ status: string; reason?: string }> {
-  if (!queued && !verifyRazorpayWebhookSignature(input.rawBody, input.signature)) {
-    throw unauthorized("Invalid Razorpay webhook signature");
+  const candidates = [];
+  for (const profile of razorpayWebhookProfiles()) {
+    const allowed = input.payload.__evaWebhookMerchantKeys;
+    if (queued ? !Array.isArray(allowed) || allowed.includes(profile.keyId)
+      : await withRazorpayProfile(profile, async () => verifyRazorpayWebhookSignature(input.rawBody, input.signature))) candidates.push(profile);
   }
-
+  if (!candidates.length) throw unauthorized("Invalid Razorpay webhook signature");
   const eventType = String(input.payload.event ?? "unknown");
   const eventId = input.eventId || stableEventId("razorpay", eventType, input.payload);
   if (!queued) {
-    await enqueueJob("razorpay_webhook", eventId, input.payload);
+    await enqueueJob("razorpay_webhook", eventId, { ...input.payload, __evaWebhookMerchantKeys: candidates.map(profile => profile.keyId) });
     return { status: "queued" };
   }
+  const profile = await webhookRazorpayProfile(input.payload, candidates);
+  if (!candidates.some(candidate => candidate.keyId === profile.keyId)) throw unauthorized("Webhook does not match the stored payment merchant");
+  return withRazorpayProfile(profile, async () => {
   const marker = await WebhookEventModel.findOneAndUpdate(
     { eventId },
     { $setOnInsert: { eventId, provider: "razorpay", eventType, status: "failed", payload: input.payload } },
@@ -354,8 +370,8 @@ export async function processRazorpayWebhook(input: {
           provider: "razorpay",
           providerPaymentId: String(paymentEntity.id),
           providerOrderId: String(paymentEntity.order_id ?? ""),
-          amount: Number(paymentEntity.amount ?? env.PLAN_AMOUNT),
-          currency: String(paymentEntity.currency ?? env.PLAN_CURRENCY),
+          amount: Number(paymentEntity.amount ?? razorpayProfile().amount),
+          currency: String(paymentEntity.currency ?? razorpayProfile().currency),
           status: paymentEntity.status === "refunded" ? "refunded" : paymentEntity.status === "captured" ? "completed" : paymentEntity.status === "failed" ? "failed" : "pending",
           providerPayload: paymentEntity
         }
@@ -374,8 +390,8 @@ export async function processRazorpayWebhook(input: {
       planId: env.PLAN_ID,
       active: false,
       status: "failed",
-      amount: Number(paymentEntity.amount ?? env.PLAN_AMOUNT),
-      currency: String(paymentEntity.currency ?? env.PLAN_CURRENCY),
+      amount: Number(paymentEntity.amount ?? razorpayProfile().amount),
+      currency: String(paymentEntity.currency ?? razorpayProfile().currency),
       providerSubscriptionId: subscriptionId,
       currentEnd: null,
       notification: {
@@ -385,7 +401,7 @@ export async function processRazorpayWebhook(input: {
     });
   }
 
-  if (subscription.externalTransactionToken && paymentEntity?.status === "captured" && paymentEntity.amount === env.PLAN_AMOUNT && paymentEntity.id) {
+  if (subscription.externalTransactionToken && paymentEntity?.status === "captured" && paymentEntity.amount === razorpayProfile().amount && paymentEntity.currency === razorpayProfile().currency && paymentEntity.id) {
     await enqueueJob("external_transaction", `external-${paymentEntity.id}`, {
       subscriptionId: subscription._id.toString(), payment: paymentEntity
     });
@@ -402,8 +418,8 @@ export async function processRazorpayWebhook(input: {
       planId: subscription.planId,
       active: false,
       status: "halted",
-      amount: env.PLAN_AMOUNT,
-      currency: env.PLAN_CURRENCY,
+      amount: razorpayProfile().amount,
+      currency: razorpayProfile().currency,
       providerSubscriptionId: subscription.providerSubscriptionId ?? "",
       currentEnd: subscription.currentEnd?.toISOString() ?? null,
       notification: {
@@ -415,6 +431,7 @@ export async function processRazorpayWebhook(input: {
   await WebhookEventModel.updateOne({ eventId }, { $set: { status: "processed" } });
 
   return { status: "processed" };
+  });
 }
 
 async function processRazorpayRefund(payload: Record<string, unknown>, eventId: string): Promise<void> {
@@ -430,14 +447,14 @@ async function processRazorpayRefund(payload: Record<string, unknown>, eventId: 
   const remote = await fetchRazorpaySubscription(stored.providerSubscriptionId);
   const currentStart = dateFromUnix(remote.current_start);
   const currentEnd = dateFromUnix(remote.current_end);
-  if (payment.amount === env.PLAN_AMOUNT && payment.amount_refunded === payment.amount && currentStart && currentEnd && payment.created_at * 1000 >= currentStart.getTime() && payment.created_at * 1000 < currentEnd.getTime()) {
+  if (payment.amount === razorpayProfile().amount && payment.amount_refunded === payment.amount && currentStart && currentEnd && payment.created_at * 1000 >= currentStart.getTime() && payment.created_at * 1000 < currentEnd.getTime()) {
     await SubscriptionModel.updateOne({ _id: stored._id }, { $max: { refundedThrough: currentEnd } });
   }
   const subscription = await upsertRazorpaySubscription(stored.userId, remote);
   await PaymentModel.updateOne({ _id: receipt._id }, { $set: {
     status: payment.amount_refunded === payment.amount ? "refunded" : "completed", providerPayload: payment
   } });
-  if (stored.externalTransactionToken && payment.amount === env.PLAN_AMOUNT) {
+  if (stored.externalTransactionToken && payment.amount === razorpayProfile().amount) {
     await enqueueJob("external_transaction", `external-${payment.id}`, { subscriptionId: stored._id.toString(), payment });
     await enqueueJob("external_refund", `refund-${refund.id}`, { subscriptionId: stored._id.toString(), payment, refund });
   }
@@ -513,11 +530,11 @@ async function enqueueSubscriptionConfirmation(
     planId: subscription.planId,
     active: subscription.active && isEntitlementActive(subscription.status, subscription.currentEnd),
     status: subscription.status,
-    amount: receipt ? env.PLAN_AMOUNT : 0,
-    currency: env.PLAN_CURRENCY,
+    amount: receipt ? subscription.billingAmount ?? env.PLAN_AMOUNT : 0,
+    currency: subscription.billingCurrency ?? env.PLAN_CURRENCY,
     providerSubscriptionId: subscription.providerSubscriptionId ?? "",
     currentEnd: subscription.currentEnd?.toISOString() ?? null,
-    ...(subscription.status !== "active" || subscription.cancelAtPeriodEnd ? { notification: lifecycleNotification(subscription) } : {})
+    ...(!receipt && (subscription.status !== "active" || subscription.cancelAtPeriodEnd) ? { notification: lifecycleNotification(subscription) } : {})
   });
 }
 
@@ -635,7 +652,8 @@ async function upsertRazorpaySubscription(
   userId: string,
   remote: RazorpaySubscription
 ): Promise<SubscriptionDocument> {
-  if (remote.plan_id !== env.RAZORPAY_SUBSCRIPTION_PLAN_ID) throw badRequest("Razorpay subscription does not match the configured plan");
+  const profile = razorpayProfile();
+  if (remote.plan_id !== profile.planId) throw badRequest("Razorpay subscription does not match the configured plan");
   const existing = await SubscriptionModel.findOne({ provider: "razorpay", providerSubscriptionId: remote.id });
   const remoteUserId = String(remote.notes?.userId ?? "");
   if ((existing && existing.userId !== userId) || (remoteUserId && remoteUserId !== userId) || (!existing && !remoteUserId)) {
@@ -651,7 +669,10 @@ async function upsertRazorpaySubscription(
         userId,
         provider: "razorpay",
         providerSubscriptionId: remote.id,
-        productId: env.RAZORPAY_SUBSCRIPTION_PLAN_ID,
+        productId: profile.planId,
+        razorpayMerchantKeyId: profile.keyId,
+        billingAmount: profile.amount,
+        billingCurrency: profile.currency,
         planId: env.PLAN_ID,
         status,
         active: isEntitlementActive(status, currentEnd),

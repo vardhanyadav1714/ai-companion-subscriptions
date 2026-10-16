@@ -51,6 +51,14 @@ const envSchema = z.object({
   RAZORPAY_WEBHOOK_SECRET: z.string().optional().default(""),
   RAZORPAY_SUBSCRIPTION_PLAN_ID: z.string().optional().default("plan_TgMvWQzlmT0eVZ"),
   RAZORPAY_SUBSCRIPTION_TOTAL_COUNT: z.coerce.number().int().positive().default(120),
+  RAZORPAY_LEGACY_KEY_ID: z.string().default(""),
+  RAZORPAY_LEGACY_KEY_SECRET: z.string().default(""),
+  RAZORPAY_LEGACY_WEBHOOK_SECRET: z.string().default(""),
+  RAZORPAY_LEGACY_PLAN_ID: z.string().default(""),
+  RAZORPAY_LEGACY_PLAN_AMOUNT: z.coerce.number().int().positive().default(49900),
+  RAZORPAY_LEGACY_PLAN_CURRENCY: z.string().length(3).default("INR"),
+  RAZORPAY_LIVE_TEST_PLAN_ID: z.string().default(""),
+  RAZORPAY_LIVE_TEST_USER_ID: z.string().default(""),
 
   PAYMENT_CONFIRMATION_URL: optionalUrl,
   PAYMENT_CONFIRMATION_TOKEN: z.string().optional().default(""),
@@ -65,6 +73,18 @@ const envSchema = z.object({
   QUEUE_RETRY_MAX_SECONDS: z.coerce.number().int().positive().default(1800),
   QUEUE_LEASE_SECONDS: z.coerce.number().int().positive().default(300),
   RECONCILIATION_INTERVAL_SECONDS: z.coerce.number().int().min(60).default(900)
+}).superRefine((values, context) => {
+  const legacy = [values.RAZORPAY_LEGACY_KEY_ID, values.RAZORPAY_LEGACY_KEY_SECRET,
+    values.RAZORPAY_LEGACY_WEBHOOK_SECRET, values.RAZORPAY_LEGACY_PLAN_ID];
+  if (legacy.some(Boolean) && (!legacy.every(Boolean) || values.RAZORPAY_LEGACY_KEY_ID === values.RAZORPAY_KEY_ID)) {
+    context.addIssue({ code: "custom", path: ["RAZORPAY_LEGACY_KEY_ID"], message: "Configure a complete, distinct legacy merchant" });
+  }
+  if (Boolean(values.RAZORPAY_LIVE_TEST_PLAN_ID) !== Boolean(values.RAZORPAY_LIVE_TEST_USER_ID) ||
+      (values.RAZORPAY_LIVE_TEST_USER_ID && (!values.RAZORPAY_KEY_ID.startsWith("rzp_live_") ||
+        values.RAZORPAY_LIVE_TEST_PLAN_ID === values.RAZORPAY_SUBSCRIPTION_PLAN_ID ||
+        !/^[a-f\d]{24}$/i.test(values.RAZORPAY_LIVE_TEST_USER_ID)))) {
+    context.addIssue({ code: "custom", path: ["RAZORPAY_LIVE_TEST_USER_ID"], message: "Live verification requires a distinct plan and exact Eva user ID" });
+  }
 });
 
 const parsed = envSchema.safeParse(process.env);

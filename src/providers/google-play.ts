@@ -8,6 +8,7 @@ import { SubscriptionModel } from "../models.js";
 import { withBillingLock } from "../services/billing-lock.js";
 import { fetchInitialRazorpayPayment } from "./razorpay.js";
 import { indiaAdministrativeAreas } from "../services/alternative-billing.js";
+import { storedRazorpayProfile, withRazorpayProfile } from "./razorpay-context.js";
 
 const androidPublisherScope = "https://www.googleapis.com/auth/androidpublisher";
 
@@ -32,6 +33,8 @@ async function reportExternalTransactionUnlocked(payload: Record<string, unknown
   const subscription = await SubscriptionModel.findById(String(payload.subscriptionId));
   const payment = payload.payment as Record<string, unknown>;
   if (!subscription?.externalTransactionToken) throw new Error("Missing external transaction token");
+  const profile = storedRazorpayProfile(subscription);
+  if (payment.amount !== profile.amount || payment.currency !== profile.currency) throw new Error("Reported payment does not match the stored subscription price");
   if (env.GOOGLE_PLAY_TAX_REGION !== "IN" || !indiaAdministrativeAreas.includes(subscription.billingAdministrativeArea as typeof indiaAdministrativeAreas[number])) {
     throw new Error("Missing valid Indian billing state for external reporting");
   }
@@ -39,7 +42,7 @@ async function reportExternalTransactionUnlocked(payload: Record<string, unknown
   let initialPayment;
   if (!subscription.initialExternalTransactionId) {
     if (!subscription.providerSubscriptionId) throw new Error("Missing provider subscription identity");
-    initialPayment = await fetchInitialRazorpayPayment(subscription.providerSubscriptionId);
+    initialPayment = await withRazorpayProfile(storedRazorpayProfile(subscription), () => fetchInitialRazorpayPayment(subscription.providerSubscriptionId!));
   }
   const initialId = subscription.initialExternalTransactionId ?? `eva-${initialPayment!.id}`;
   await SubscriptionModel.updateOne({ _id: subscription._id, $or: [{ initialExternalTransactionId: { $exists: false } }, { initialExternalTransactionId: null }, { initialExternalTransactionId: "" }] }, {

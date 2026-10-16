@@ -78,6 +78,125 @@ const rtdn = (data: Record<string, unknown>, id = "message-1") => ({
 });
 
 describe("billing persistence and lifecycle", () => {
+  async function migratedMerchant(action: () => Promise<void>) {
+    const { env } = await import("../config/env.js");
+    const saved = { ...env };
+    Object.assign(env, { RAZORPAY_KEY_ID: "rzp_live_new", RAZORPAY_KEY_SECRET: "new-private", RAZORPAY_WEBHOOK_SECRET: "new-hook",
+      RAZORPAY_SUBSCRIPTION_PLAN_ID: "plan_new", RAZORPAY_LEGACY_KEY_ID: "rzp_live_old", RAZORPAY_LEGACY_KEY_SECRET: "old-private",
+      RAZORPAY_LEGACY_WEBHOOK_SECRET: "old-hook", RAZORPAY_LEGACY_PLAN_ID: "plan_old", RAZORPAY_LEGACY_PLAN_AMOUNT: 34900,
+      RAZORPAY_LIVE_TEST_PLAN_ID: "plan_verify", RAZORPAY_LIVE_TEST_USER_ID: "account-a" });
+    try { await action(); } finally { Object.assign(env, saved); }
+  }
+
+  it("persists restricted live checkout merchant and price without changing the public plan", async () => {
+    await migratedMerchant(async () => {
+      const { razorpayProfile } = await import("../providers/razorpay-context.js");
+      providers.create.mockImplementation(async (input: { userId: string }) => {
+        expect(razorpayProfile()).toMatchObject({ keyId: "rzp_live_new", amount: 100, planId: "plan_verify", totalCount: 1 });
+        return { id: "sub_verify", plan_id: "plan_verify", status: "created", short_url: "https://rzp.io/verify", notes: { userId: input.userId } };
+      });
+      await service.createRazorpayCheckout({ userId: "account-a" });
+      expect(await models.SubscriptionModel.findOne({ providerSubscriptionId: "sub_verify" })).toMatchObject({
+        userId: "account-a", razorpayMerchantKeyId: "rzp_live_new", productId: "plan_verify", billingAmount: 100, billingCurrency: "INR" });
+      expect(await models.PlanModel.findOne({ planId: "eva_premium_monthly" })).toMatchObject({ amount: 49900, razorpayPlanId: "plan_new" });
+      await service.createRazorpayCheckout({ userId: "account-a" });
+      expect(providers.create).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("never reuses an old-merchant pending checkout for a new merchant purchase", async () => {
+    await migratedMerchant(async () => {
+      await models.SubscriptionModel.create({ userId: "account-b", provider: "razorpay", providerSubscriptionId: "sub_old",
+        planId: "premium", productId: "plan_old", status: "created", checkoutUrl: "https://rzp.io/old", providerPayload: { plan_id: "plan_old" } });
+      providers.create.mockResolvedValue({ id: "sub_new", plan_id: "plan_new", status: "created", short_url: "https://rzp.io/new", notes: { userId: "account-b" } });
+      expect(await service.createRazorpayCheckout({ userId: "account-b" })).toMatchObject({ checkoutUrl: "https://rzp.io/new" });
+      expect(await models.SubscriptionModel.countDocuments()).toBe(2);
+    });
+  });
+
+  it("syncs an untagged legacy subscription with the original merchant and historical price", async () => {
+    await migratedMerchant(async () => {
+      const { razorpayProfile } = await import("../providers/razorpay-context.js");
+      await models.SubscriptionModel.create({ userId: "account-a", provider: "razorpay", providerSubscriptionId: "sub_old",
+        planId: "premium", productId: "plan_old", status: "active", active: true, currentEnd: future() });
+      providers.subscription.mockImplementation(async () => {
+        expect(razorpayProfile()).toMatchObject({ keyId: "rzp_live_old", planId: "plan_old", amount: 34900 });
+        return { id: "sub_old", plan_id: "plan_old", status: "active", current_end: Math.floor(Date.now() / 1000) + 86400, notes: { userId: "account-a" } };
+      });
+      expect(await service.syncSubscription({ userId: "account-a" })).toMatchObject({ active: true });
+      expect(await models.SubscriptionModel.findOne({ providerSubscriptionId: "sub_old" })).toMatchObject({ razorpayMerchantKeyId: "rzp_live_old", billingAmount: 34900 });
+    });
+  });
+
+  it("enqueues a signed webhook before provider lookups and replaces client merchant hints", async () => {
+    await migratedMerchant(async () => {
+      const result = await service.processRazorpayWebhook({ rawBody: Buffer.from("{}"), signature: "verified", eventId: "queued-migration",
+        payload: { event: "payment.captured", __evaWebhookMerchantKeys: ["untrusted"], payload: { payment: { entity: { invoice_id: "inv_old" } } } } });
+      expect(result.status).toBe("queued");
+      expect(providers.invoice).not.toHaveBeenCalled();
+      expect(providers.subscription).not.toHaveBeenCalled();
+      expect((await queue.QueueJobModel.findOne({ idempotencyKey: "queued-migration" }))?.payload.__evaWebhookMerchantKeys)
+        .toEqual(["rzp_live_new", "rzp_live_old"]);
+    });
+  });
+
+  it("does not process a stored legacy subscription as a new-merchant webhook", async () => {
+    await migratedMerchant(async () => {
+      await models.SubscriptionModel.create({ userId: "account-a", provider: "razorpay", providerSubscriptionId: "sub_old", productId: "plan_old", planId: "premium" });
+      await expect(service.processRazorpayWebhook({ rawBody: Buffer.alloc(0), signature: "", eventId: "wrong-merchant",
+        payload: { event: "subscription.charged", __evaWebhookMerchantKeys: ["rzp_live_new"], payload: { subscription: { entity: { id: "sub_old" } } } } }, true))
+        .rejects.toThrow("stored payment merchant");
+      expect(providers.subscription).not.toHaveBeenCalled();
+    });
+  });
+
+  it("routes invoice-only legacy events to the original credentials and receipts the historical price", async () => {
+    await migratedMerchant(async () => {
+      const { razorpayProfile } = await import("../providers/razorpay-context.js");
+      await models.SubscriptionModel.create({ userId: "account-a", provider: "razorpay", providerSubscriptionId: "sub_old", productId: "plan_old", planId: "premium" });
+      providers.invoice.mockImplementation(async () => {
+        expect(razorpayProfile().keyId).toBe("rzp_live_old");
+        return { subscription_id: "sub_old", payment_id: "pay_old" };
+      });
+      providers.subscription.mockResolvedValue({ id: "sub_old", plan_id: "plan_old", status: "active",
+        current_end: Math.floor(Date.now() / 1000) + 86400, notes: { userId: "account-a" } });
+      providers.payment.mockResolvedValue({ id: "pay_old", amount: 34900, currency: "INR", status: "captured" });
+      await service.processRazorpayWebhook({ rawBody: Buffer.alloc(0), signature: "", eventId: "invoice-only",
+        payload: { event: "payment.captured", __evaWebhookMerchantKeys: ["rzp_live_old"], payload: { payment: { entity: { id: "pay_old", invoice_id: "inv_old" } } } } }, true);
+      expect((await queue.QueueJobModel.findOne({ jobType: "payment_confirmation" }))?.payload.amount).toBe(34900);
+      expect((await models.SubscriptionModel.findOne({ providerSubscriptionId: "sub_old" }))?.razorpayMerchantKeyId).toBe("rzp_live_old");
+    });
+  });
+
+  it("verifies a stored one-rupee purchase after disabling its allowlist and receipts its actual amount once", async () => {
+    await migratedMerchant(async () => {
+      const { env } = await import("../config/env.js");
+      await models.SubscriptionModel.create({ userId: "account-a", provider: "razorpay", providerSubscriptionId: "sub_verify",
+        planId: "premium", productId: "plan_verify", status: "created", razorpayMerchantKeyId: "rzp_live_new", billingAmount: 100, billingCurrency: "INR" });
+      env.RAZORPAY_LIVE_TEST_USER_ID = "";
+      providers.subscription.mockResolvedValue({ id: "sub_verify", plan_id: "plan_verify", status: "completed",
+        current_end: Math.floor(Date.now() / 1000) + 86400, notes: { userId: "account-a" } });
+      providers.payment.mockResolvedValue({ id: "pay_verify", amount: 100, currency: "INR", status: "captured" });
+      const input = { userId: "account-a", razorpayPaymentId: "pay_verify", razorpaySubscriptionId: "sub_verify", razorpaySignature: "verified" };
+      expect(await service.confirmRazorpayPayment(input)).toMatchObject({ active: true, autoRenew: false });
+      await service.confirmRazorpayPayment(input);
+      expect(await models.PaymentModel.countDocuments()).toBe(1);
+      expect(await queue.QueueJobModel.countDocuments({ jobType: "payment_confirmation" })).toBe(1);
+      expect((await queue.QueueJobModel.findOne({ jobType: "payment_confirmation" }))?.payload.amount).toBe(100);
+      expect((await queue.QueueJobModel.findOne({ jobType: "payment_confirmation" }))?.payload.notification).toBeUndefined();
+    });
+  });
+
+  it("does not let another user confirm a stored verification purchase", async () => {
+    await migratedMerchant(async () => {
+      await models.SubscriptionModel.create({ userId: "account-a", provider: "razorpay", providerSubscriptionId: "sub_verify",
+        planId: "premium", productId: "plan_verify", status: "created", razorpayMerchantKeyId: "rzp_live_new", billingAmount: 100 });
+      await expect(service.confirmRazorpayPayment({ userId: "account-b", razorpayPaymentId: "pay_verify", razorpaySubscriptionId: "sub_verify", razorpaySignature: "verified" }))
+        .rejects.toThrow("another account");
+      expect(providers.payment).not.toHaveBeenCalled();
+    });
+  });
+
   it("binds a verified purchase and rejects a different Eva account", async () => {
     await expect(confirm()).resolves.toMatchObject({ active: true });
     await expect(confirm("account-b")).rejects.toThrow("another Eva account");

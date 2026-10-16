@@ -27,6 +27,17 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("external billing reporting", () => {
+  it("reports a stored one-rupee live verification payment as one million micros", async () => {
+    models.subscription.mockResolvedValue({ _id: "sub_1", providerSubscriptionId: "sub_provider", externalTransactionToken: "choice",
+      billingAdministrativeArea: "UTTAR PRADESH", initialExternalTransactionId: "eva-pay_1", billingAmount: 100, billingCurrency: "INR" });
+    fetchMock.mockResolvedValueOnce(new Response("", { status: 404 })).mockResolvedValueOnce(new Response("{}"));
+    await reportExternalTransaction({ subscriptionId: "sub_1", payment: { ...payment, amount: 100 } });
+    expect(JSON.parse(fetchMock.mock.calls[1]![1].body).originalPreTaxAmount.priceMicros).toBe("1000000");
+  });
+  it("rejects a report that changes the stored payment price", async () => {
+    await expect(reportExternalTransaction({ subscriptionId: "sub_1", payment: { ...payment, amount: 100 } })).rejects.toThrow("stored subscription price");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
   it("reports paise as micros with the provider timestamp and first-purchase token", async () => {
     fetchMock.mockResolvedValueOnce(new Response("", { status: 404 })).mockResolvedValueOnce(new Response("{}"));
     await reportExternalTransaction({ subscriptionId: "sub_1", payment });

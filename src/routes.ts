@@ -20,6 +20,7 @@ import { processDueConfirmationJobs } from "./services/confirmation-queue.js";
 import { QueueJobModel } from "./models/queue-job.model.js";
 import { success } from "./utils/response.js";
 import { isAlternativeBillingReady } from "./services/alternative-billing.js";
+import { UserModel } from "./models.js";
 
 const userSchema = z.object({
   userId: z.string().trim().min(1).max(160),
@@ -50,6 +51,13 @@ const syncSchema = z.object({
 });
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
+  app.post("/api/v1/internal/billing/resolve-user", async request => {
+    requireInternalKey(request);
+    const { email } = z.object({ email: z.string().trim().email().transform(value => value.toLowerCase()) }).parse(request.body);
+    const users = await UserModel.find({ email }).select("userId").limit(2).lean();
+    if (users.length !== 1) throw badRequest("Billing account email must resolve to exactly one existing Eva user");
+    return success({ userId: String(users[0]!.userId) });
+  });
   app.get("/api/v1/billing/options", async request => {
     requireInternalKey(request);
     return success({
