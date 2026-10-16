@@ -406,7 +406,9 @@ export async function processRazorpayWebhook(input: {
       subscriptionId: subscription._id.toString(), payment: paymentEntity
     });
   }
-  await enqueueSubscriptionConfirmation(eventId, eventType, subscription);
+  if (!["created", "pending", "authenticated"].includes(subscription.status) && !eventType.includes("failed")) {
+    await enqueueSubscriptionConfirmation(eventId, eventType, subscription);
+  }
 
   if (subscription.status === "halted") {
     // Halted (payment pending): nudge the user to fix the payment method.

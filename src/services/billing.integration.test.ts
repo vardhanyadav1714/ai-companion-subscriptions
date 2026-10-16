@@ -197,6 +197,16 @@ describe("billing persistence and lifecycle", () => {
     });
   });
 
+  it("sends one failed-payment nudge without a second created-membership notification", async () => {
+    providers.subscription.mockResolvedValue({ id: "sub_failed", plan_id: "plan_test", status: "created", notes: { userId: "account-a" } });
+    providers.payment.mockResolvedValue({ id: "pay_failed", amount: 49900, currency: "INR", status: "failed" });
+    await service.processRazorpayWebhook({ rawBody: Buffer.alloc(0), signature: "", eventId: "first-failed",
+      payload: { event: "payment.failed", payload: { subscription: { entity: { id: "sub_failed" } }, payment: { entity: { id: "pay_failed" } } } } }, true);
+    expect(await queue.QueueJobModel.countDocuments({ jobType: "payment_confirmation" })).toBe(1);
+    expect((await queue.QueueJobModel.findOne({ jobType: "payment_confirmation" }))?.payload.notification).toMatchObject({ title: "Payment didn't go through" });
+    expect(await service.getEntitlement("account-a")).toMatchObject({ active: false });
+  });
+
   it("binds a verified purchase and rejects a different Eva account", async () => {
     await expect(confirm()).resolves.toMatchObject({ active: true });
     await expect(confirm("account-b")).rejects.toThrow("another Eva account");
