@@ -38,6 +38,7 @@ import { decodePlayNotification } from "./play-notifications.js";
 import { withBillingLock } from "./billing-lock.js";
 import { validateAlternativeBilling } from "./alternative-billing.js";
 import { QueueJobModel } from "../models/queue-job.model.js";
+import { voiceBillingCycleId } from "./voice-cycle.js";
 import { checkoutRazorpayProfile, storedRazorpayProfile, webhookRazorpayProfile, razorpayWebhookProfiles, razorpayProfile, withRazorpayProfile } from "../providers/razorpay-context.js";
 
 export type Entitlement = {
@@ -48,6 +49,7 @@ export type Entitlement = {
   freeMessageLimit: number;
   paidDailyMessageLimit: number;
   currentEnd: string | null;
+  voiceCycleId?: string | null;
   providerSubscriptionId: string;
   autoRenew: boolean;
   cancelAtPeriodEnd: boolean;
@@ -719,6 +721,7 @@ function serializeEntitlement(subscription: SubscriptionDocument): Entitlement {
     freeMessageLimit: env.FREE_MESSAGE_LIMIT,
     paidDailyMessageLimit: env.PAID_DAILY_MESSAGE_LIMIT,
     currentEnd: subscription.currentEnd?.toISOString() ?? null,
+    voiceCycleId: voiceBillingCycleId(subscription),
     providerSubscriptionId: subscription.providerSubscriptionId ?? "",
     autoRenew: subscription.autoRenew,
     cancelAtPeriodEnd: Boolean(subscription.cancelAtPeriodEnd)
