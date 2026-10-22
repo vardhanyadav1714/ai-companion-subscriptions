@@ -34,7 +34,10 @@ it("grants bounded access without financial records and retries do not extend it
   const again = await service.grantTestAccess(userId);
   expect(again.expiresAt).toEqual(grant.expiresAt);
   expect(grant.expiresAt.getTime() - grant.grantedAt.getTime()).toBe(86400000);
-  expect(await billing.getEntitlement(userId)).toMatchObject({ active: true, provider: "none", autoRenew: false, providerSubscriptionId: "", voiceCycleId: `test-access:${grant._id}` });
+  const entitlement = await billing.getEntitlement(userId);
+  expect(entitlement).toMatchObject({ active: true, provider: "none", autoRenew: false, providerSubscriptionId: "" });
+  expect(entitlement.voiceCycleId).toMatch(/^[a-f0-9]{64}$/);
+  expect((await billing.getEntitlement(userId)).voiceCycleId).toBe(entitlement.voiceCycleId);
   expect(await models.PaymentModel.countDocuments()).toBe(0);
   expect(await models.SubscriptionModel.countDocuments()).toBe(0);
   expect(await mongoose.connection.db!.collection("queuejobs").countDocuments()).toBe(0);

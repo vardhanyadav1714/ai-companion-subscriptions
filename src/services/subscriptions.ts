@@ -91,7 +91,7 @@ export async function getEntitlement(userId: string): Promise<Entitlement> {
     const grant = await getTestAccess(userId);
     if (grant) return {
       ...emptyEntitlement(), active: true, status: "active", currentEnd: grant.expiresAt.toISOString(),
-      voiceCycleId: `test-access:${grant._id.toString()}`
+      voiceCycleId: createHash("sha256").update(`test-access:${grant._id.toString()}`).digest("hex")
     };
   }
   const subscription = active ?? await SubscriptionModel.findOne({ userId }).sort({ updatedAt: -1 }).lean();
