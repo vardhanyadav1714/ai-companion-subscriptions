@@ -21,6 +21,7 @@ import { QueueJobModel } from "./models/queue-job.model.js";
 import { success } from "./utils/response.js";
 import { isAlternativeBillingReady } from "./services/alternative-billing.js";
 import { UserModel } from "./models.js";
+import { grantTestAccess, revokeTestAccess } from "./services/test-access.js";
 
 const userSchema = z.object({
   userId: z.string().trim().min(1).max(160),
@@ -51,6 +52,18 @@ const syncSchema = z.object({
 });
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
+  app.post("/api/v1/internal/test-access", async request => {
+    requireInternalKey(request);
+    const { userId } = z.object({ userId: z.string().regex(/^[a-f\d]{24}$/i) }).strict().parse(request.body);
+    const grant = await grantTestAccess(userId);
+    return success({ expiresAt: grant.expiresAt, testAccess: true, paymentCreated: false });
+  });
+  app.delete("/api/v1/internal/test-access/:userId", async request => {
+    requireInternalKey(request);
+    const { userId } = z.object({ userId: z.string().regex(/^[a-f\d]{24}$/i) }).parse(request.params);
+    await revokeTestAccess(userId);
+    return success({ revoked: true });
+  });
   app.post("/api/v1/internal/billing/resolve-user", async request => {
     requireInternalKey(request);
     const { email } = z.object({ email: z.string().trim().email().transform(value => value.toLowerCase()) }).parse(request.body);

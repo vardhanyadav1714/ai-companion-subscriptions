@@ -21,6 +21,7 @@ const envSchema = z.object({
   CORS_ORIGIN: z.string().default("http://localhost:3000"),
 
   SUBSCRIPTIONS_API_KEY: z.preprocess(blankAsUndefined, z.string().min(16)),
+  TEST_ACCESS_USER_ID: z.string().regex(/^[a-f\d]{24}$/i).or(z.literal("")).default(""),
 
   MONGODB_URI: z.string().min(1),
   MONGODB_DATABASE: z.string().min(1).default("eva_subscriptions"),

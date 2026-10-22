@@ -39,6 +39,7 @@ import { withBillingLock } from "./billing-lock.js";
 import { validateAlternativeBilling } from "./alternative-billing.js";
 import { QueueJobModel } from "../models/queue-job.model.js";
 import { voiceBillingCycleId } from "./voice-cycle.js";
+import { getTestAccess } from "./test-access.js";
 import { checkoutRazorpayProfile, storedRazorpayProfile, webhookRazorpayProfile, razorpayWebhookProfiles, razorpayProfile, withRazorpayProfile } from "../providers/razorpay-context.js";
 
 export type Entitlement = {
@@ -86,6 +87,13 @@ export async function getEntitlement(userId: string): Promise<Entitlement> {
     userId, active: true, status: { $in: ["active", "grace_period", "cancelled", "completed"] },
     currentEnd: { $gt: new Date() }
   }).sort({ currentEnd: -1 }).lean();
+  if (!active) {
+    const grant = await getTestAccess(userId);
+    if (grant) return {
+      ...emptyEntitlement(), active: true, status: "active", currentEnd: grant.expiresAt.toISOString(),
+      voiceCycleId: `test-access:${grant._id.toString()}`
+    };
+  }
   const subscription = active ?? await SubscriptionModel.findOne({ userId }).sort({ updatedAt: -1 }).lean();
   if (!subscription) return emptyEntitlement();
   return serializeEntitlement(subscription as SubscriptionDocument);
