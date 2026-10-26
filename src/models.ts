@@ -77,6 +77,7 @@ const subscriptionSchema = new Schema(
     refundedThrough: { type: Date },
     lastSyncedAt: { type: Date },
     lastSyncQueuedAt: { type: Date },
+    entitlementCheckAfter: { type: Date },
     providerPayload: { type: Schema.Types.Mixed }
   },
   { timestamps: true }
@@ -144,6 +145,7 @@ export type SubscriptionDocument = {
   refundedThrough?: Date;
   lastSyncedAt?: Date;
   lastSyncQueuedAt?: Date;
+  entitlementCheckAfter?: Date;
   providerPayload?: unknown;
   createdAt: Date;
   updatedAt: Date;

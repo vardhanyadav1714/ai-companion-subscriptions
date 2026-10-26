@@ -82,7 +82,15 @@ export async function listPlans(): Promise<unknown[]> {
   return PlanModel.find({ active: true }).sort({ amount: 1 }).lean();
 }
 
+const boundaryChecks = new Map<string, Promise<void>>();
+const BOUNDARY_WINDOW_MS = 60_000;
+const BOUNDARY_RETRY_MS = 15_000;
+
 export async function getEntitlement(userId: string): Promise<Entitlement> {
+  return readEntitlement(userId, true);
+}
+
+async function readEntitlement(userId: string, revalidate: boolean): Promise<Entitlement> {
   const active = await SubscriptionModel.findOne({
     userId, active: true, status: { $in: ["active", "grace_period", "cancelled", "completed"] },
     currentEnd: { $gt: new Date() }
@@ -96,7 +104,68 @@ export async function getEntitlement(userId: string): Promise<Entitlement> {
   }
   const subscription = active ?? await SubscriptionModel.findOne({ userId }).sort({ updatedAt: -1 }).lean();
   if (!subscription) return emptyEntitlement();
+  if (revalidate && needsBoundaryCheck(subscription as SubscriptionDocument)) {
+    let check = boundaryChecks.get(userId);
+    if (!check) {
+      check = revalidateAtBoundary(subscription as SubscriptionDocument).finally(() => boundaryChecks.delete(userId));
+      boundaryChecks.set(userId, check);
+    }
+    await check;
+    return readEntitlement(userId, false);
+  }
   return serializeEntitlement(subscription as SubscriptionDocument);
+}
+
+function needsBoundaryCheck(subscription: SubscriptionDocument): boolean {
+  if (!["active", "grace_period", "cancelled", "completed"].includes(subscription.status)) return false;
+  if (subscription.provider === "google_play" && !subscription.purchaseToken) return false;
+  if (subscription.provider === "razorpay" && !subscription.providerSubscriptionId) return false;
+  const end = subscription.currentEnd?.getTime();
+  return end !== undefined && Number.isFinite(end) && end <= Date.now() + BOUNDARY_WINDOW_MS;
+}
+
+async function revalidateAtBoundary(subscription: SubscriptionDocument): Promise<void> {
+  try {
+  await withBillingLock(`entitlement:${subscription.userId}`, async () => {
+    const current = await SubscriptionModel.findOne({ _id: subscription._id, userId: subscription.userId });
+    if (!current || !needsBoundaryCheck(current)) return;
+    if (current.entitlementCheckAfter && current.entitlementCheckAfter.getTime() > Date.now()) {
+      if (!isEntitlementActive(current.status, current.currentEnd)) {
+        throw serviceUnavailable("Your paid membership is being verified. Please try again shortly.");
+      }
+      return;
+    }
+    // Shared cooldown prevents provider outages or concurrent replicas from causing
+    // unbounded retries. Never charge free quota while a known paid renewal is unknown.
+    await SubscriptionModel.updateOne({ _id: current._id }, { $set: {
+      entitlementCheckAfter: new Date(Date.now() + BOUNDARY_RETRY_MS)
+    } });
+    let updated: SubscriptionDocument;
+    try {
+      if (current.provider === "google_play") {
+        const remote = await fetchGooglePlaySubscriptionPurchase(current.purchaseToken!);
+        updated = await upsertGooglePlaySubscription(current.userId, current.purchaseToken!, remote);
+      } else {
+        updated = await withRazorpayProfile(storedRazorpayProfile(current), async () => {
+          const remote = await fetchRazorpaySubscription(current.providerSubscriptionId!);
+          return upsertRazorpaySubscription(current.userId, remote);
+        });
+      }
+    } catch {
+      if (isEntitlementActive(current.status, current.currentEnd)) return;
+      throw serviceUnavailable("Your paid membership could not be verified. Please try again shortly.");
+    }
+    await enqueueSubscriptionConfirmation(`boundary:${updated._id}`, "subscription.revalidated", updated);
+    if (["active", "grace_period"].includes(updated.status) && !isEntitlementActive(updated.status, updated.currentEnd)) {
+      throw serviceUnavailable("Your renewal is still being confirmed. Please try again shortly.");
+    }
+  });
+  } catch (error) {
+    // An already verified, unexpired paid period stays usable during a provider
+    // outage or another replica's check. This never extends its recorded expiry.
+    if (isEntitlementActive(subscription.status, subscription.currentEnd)) return;
+    throw error;
+  }
 }
 
 export async function createRazorpayCheckout(input: {
@@ -289,18 +358,24 @@ export async function enqueueDueSubscriptionSyncs(): Promise<number> {
   if (!providers.length) return 0;
   const interval = env.RECONCILIATION_INTERVAL_SECONDS * 1000;
   const stale = new Date(Date.now() - interval);
+  const boundary = new Date(Date.now() + BOUNDARY_WINDOW_MS);
+  const recentBoundary = new Date(Date.now() - 5 * 60_000);
+  const checkedRecently = new Date(Date.now() - 30_000);
   const subscriptions = await SubscriptionModel.find({
     provider: { $in: providers },
     status: { $in: ["created", "pending", "authenticated", "active", "grace_period", "on_hold", "paused", "halted", "cancelled", "completed"] },
     $and: [
-      { $or: [{ lastSyncedAt: { $lte: stale } }, { lastSyncedAt: { $exists: false } }] },
-      { $or: [{ lastSyncQueuedAt: { $lte: stale } }, { lastSyncQueuedAt: { $exists: false } }] },
+      { $or: [{ lastSyncedAt: { $lte: stale } }, { lastSyncedAt: { $exists: false } },
+        { currentEnd: { $gte: recentBoundary, $lte: boundary }, lastSyncedAt: { $lte: checkedRecently }, status: { $in: ["active", "grace_period", "cancelled", "completed"] } }] },
+      { $or: [{ lastSyncQueuedAt: { $lte: checkedRecently } }, { lastSyncQueuedAt: { $exists: false } }] },
       { $or: [{ status: { $nin: ["cancelled", "completed"] } }, { active: true }, { currentEnd: { $gt: new Date() } }] }
     ]
   }).sort({ lastSyncedAt: 1 }).limit(env.QUEUE_BATCH_SIZE);
   const bucket = Math.floor(Date.now() / interval);
   for (const subscription of subscriptions) {
-    await enqueueJob("subscription_sync", `sync-${subscription._id}-${bucket}`, {
+    const atBoundary = subscription.currentEnd && subscription.currentEnd <= boundary;
+    const suffix = atBoundary ? `boundary-${Math.floor(Date.now() / 30_000)}` : bucket;
+    await enqueueJob("subscription_sync", `sync-${subscription._id}-${suffix}`, {
       userId: subscription.userId, provider: subscription.provider,
       ...(subscription.providerSubscriptionId ? { providerSubscriptionId: subscription.providerSubscriptionId } : {}),
       ...(subscription.purchaseToken ? { purchaseToken: subscription.purchaseToken } : {})
