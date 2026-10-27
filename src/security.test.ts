@@ -6,7 +6,7 @@ vi.mock("google-auth-library", () => ({ OAuth2Client: class { verifyIdToken = ve
 process.env.SUBSCRIPTIONS_API_KEY = "test_subscriptions_secret";
 process.env.MONGODB_URI = "mongodb://localhost/test";
 const { env } = await import("./config/env.js");
-const { requireGooglePlayPush, requireInternalKey } = await import("./security.js");
+const { requireGooglePlayPush, requireInternalKey, hasInternalKey } = await import("./security.js");
 const request = (headers: Record<string, string> = {}, query = {}) => ({ headers, query }) as FastifyRequest;
 
 beforeEach(() => {
@@ -43,5 +43,12 @@ describe("billing authentication", () => {
     expect(() => requireInternalKey(request())).toThrow();
     expect(() => requireInternalKey(request({ "x-subscriptions-key": "wrong" }))).toThrow();
     expect(() => requireInternalKey(request({ "x-subscriptions-key": env.SUBSCRIPTIONS_API_KEY }))).not.toThrow();
+  });
+  it("only exempts authenticated service calls from the public request budget", () => {
+    expect(hasInternalKey(request())).toBe(false);
+    expect(hasInternalKey(request({ "x-subscriptions-key": "wrong" }))).toBe(false);
+    expect(hasInternalKey(request({ authorization: "Bearer forged" }))).toBe(false);
+    expect(hasInternalKey(request({ "x-subscriptions-key": env.SUBSCRIPTIONS_API_KEY }))).toBe(true);
+    expect(hasInternalKey(request({ authorization: `Bearer ${env.SUBSCRIPTIONS_API_KEY}` }))).toBe(true);
   });
 });
