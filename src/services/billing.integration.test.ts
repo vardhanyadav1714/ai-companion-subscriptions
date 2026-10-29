@@ -86,6 +86,8 @@ describe("billing persistence and lifecycle", () => {
     try {
       const demo = await service.getEntitlement(reviewer);
       expect(demo).toMatchObject({ active: true, status: "active", provider: "play_review", providerSubscriptionId: "", autoRenew: false });
+      expect(await service.syncSubscription({ userId: reviewer })).toEqual(demo);
+      expect(await service.syncSubscription({ userId: "000000000000000000000044" })).toMatchObject({ active: false, provider: "none" });
       expect(await service.getEntitlement("000000000000000000000044")).toMatchObject({ active: false });
       expect(await models.PaymentModel.countDocuments()).toBe(0);
       expect(await models.SubscriptionModel.countDocuments()).toBe(0);

@@ -322,7 +322,7 @@ export async function syncSubscription(input: {
     ...(input.purchaseToken ? { purchaseToken: input.purchaseToken } : {})
   }).sort({ updatedAt: -1 });
 
-  if (!subscription) return emptyEntitlement();
+  if (!subscription) return getEntitlement(input.userId);
 
   if (subscription.provider === "google_play" && subscription.purchaseToken) {
     const remote = await fetchGooglePlaySubscriptionPurchase(subscription.purchaseToken);
