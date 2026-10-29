@@ -40,6 +40,7 @@ import { validateAlternativeBilling } from "./alternative-billing.js";
 import { QueueJobModel } from "../models/queue-job.model.js";
 import { voiceBillingCycleId } from "./voice-cycle.js";
 import { getTestAccess } from "./test-access.js";
+import { getPlayReviewAccess } from "./review-access.js";
 import { checkoutRazorpayProfile, storedRazorpayProfile, webhookRazorpayProfile, razorpayWebhookProfiles, razorpayProfile, withRazorpayProfile } from "../providers/razorpay-context.js";
 
 export type Entitlement = {
@@ -96,6 +97,8 @@ async function readEntitlement(userId: string, revalidate: boolean): Promise<Ent
     currentEnd: { $gt: new Date() }
   }).sort({ currentEnd: -1 }).lean();
   if (!active) {
+    const review = getPlayReviewAccess(userId);
+    if (review) return { ...emptyEntitlement(), ...review, active: true, status: "active" };
     const grant = await getTestAccess(userId);
     if (grant) return {
       ...emptyEntitlement(), active: true, status: "active", currentEnd: grant.expiresAt.toISOString(),

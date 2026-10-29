@@ -78,6 +78,29 @@ const rtdn = (data: Record<string, unknown>, id = "message-1") => ({
 });
 
 describe("billing persistence and lifecycle", () => {
+  it("grants only the configured review identity without payment records and preserves paid entitlements", async () => {
+    const { env } = await import("../config/env.js");
+    const previous = env.PLAY_REVIEW_USER_ID;
+    const reviewer = "000000000000000000000043";
+    env.PLAY_REVIEW_USER_ID = reviewer;
+    try {
+      const demo = await service.getEntitlement(reviewer);
+      expect(demo).toMatchObject({ active: true, status: "active", provider: "none", providerSubscriptionId: "", autoRenew: false });
+      expect(await service.getEntitlement("000000000000000000000044")).toMatchObject({ active: false });
+      expect(await models.PaymentModel.countDocuments()).toBe(0);
+      expect(await models.SubscriptionModel.countDocuments()).toBe(0);
+      expect(await queue.QueueJobModel.countDocuments()).toBe(0);
+      expect(providers.play).not.toHaveBeenCalled();
+
+      expect(await confirm(reviewer)).toMatchObject({ active: true, provider: "google_play", providerSubscriptionId: token });
+      expect(await service.getEntitlement(reviewer)).toMatchObject({ active: true, provider: "google_play", providerSubscriptionId: token });
+
+      await models.SubscriptionModel.deleteMany({ userId: reviewer });
+      env.PLAY_REVIEW_USER_ID = "";
+      expect(await service.getEntitlement(reviewer)).toMatchObject({ active: false });
+    } finally { env.PLAY_REVIEW_USER_ID = previous; }
+  });
+
   it.each([undefined, { autoRenewEnabled: false }])("preserves cancelled Play access and exposes stopped renewal when plan metadata is %j", async autoRenewingPlan => {
     await confirm();
     const expiryTime = future();
