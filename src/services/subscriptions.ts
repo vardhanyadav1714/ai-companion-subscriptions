@@ -704,6 +704,7 @@ async function upsertGooglePlaySubscription(
     status,
     active: isEntitlementActive(status, currentEnd),
     autoRenew: Boolean(lineItem.autoRenewingPlan?.autoRenewEnabled),
+    cancelAtPeriodEnd: status === "cancelled",
     latestOrderId: remote.latestOrderId ?? "",
     currentStart: parseDate(remote.startTime),
     currentEnd,

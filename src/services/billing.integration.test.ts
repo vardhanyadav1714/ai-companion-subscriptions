@@ -78,6 +78,22 @@ const rtdn = (data: Record<string, unknown>, id = "message-1") => ({
 });
 
 describe("billing persistence and lifecycle", () => {
+  it.each([undefined, { autoRenewEnabled: false }])("preserves cancelled Play access and exposes stopped renewal when plan metadata is %j", async autoRenewingPlan => {
+    await confirm();
+    const expiryTime = future();
+    providers.play.mockResolvedValue({ ...activePurchase(), subscriptionState: "SUBSCRIPTION_STATE_CANCELED",
+      lineItems: [{ productId: "eva_premium_monthly", offerDetails: { basePlanId: "monthly" }, expiryTime, autoRenewingPlan }] });
+    expect(await confirm()).toMatchObject({ active: true, status: "cancelled", autoRenew: false, cancelAtPeriodEnd: true, currentEnd: expiryTime });
+    expect(await models.SubscriptionModel.findOne({ purchaseToken: token }).lean()).toMatchObject({ cancelAtPeriodEnd: true });
+
+    providers.play.mockResolvedValue(activePurchase());
+    expect(await confirm()).toMatchObject({ active: true, status: "active", autoRenew: true, cancelAtPeriodEnd: false });
+
+    providers.play.mockResolvedValue({ ...activePurchase(), subscriptionState: "SUBSCRIPTION_STATE_EXPIRED",
+      lineItems: [{ productId: "eva_premium_monthly", offerDetails: { basePlanId: "monthly" }, expiryTime: new Date(Date.now() - 1000).toISOString() }] });
+    expect(await confirm()).toMatchObject({ active: false, status: "expired", autoRenew: false, cancelAtPeriodEnd: false });
+  });
+
   it("refreshes a lapsed cached paid period before returning a free entitlement", async () => {
     await confirm();
     await models.SubscriptionModel.updateOne({ purchaseToken: token }, { $set: { currentEnd: new Date(Date.now() - 1000) } });
