@@ -1,12 +1,15 @@
 import mongoose from "mongoose";
-import { connectMongo, disconnectMongo } from "../database/mongodb.js";
+import { env } from "../config/env.js";
 import { PaymentModel, SubscriptionModel, WebhookEventModel } from "../models.js";
 
 // Read-only: financial evidence must not be subject to an ordinary log TTL.
 // Expiry remains an operator review because legal holds and valid purchase
 // ownership must be checked before any deletion or anonymization.
 async function main(): Promise<void> {
-  await connectMongo();
+  // Do not use the application startup helper: it initializes indexes. Auditing
+  // must inspect the existing indexes, without creating or repairing any.
+  await mongoose.connect(env.MONGODB_URI, { dbName: env.MONGODB_DATABASE,
+    serverSelectionTimeoutMS: 8000, autoIndex: false, autoCreate: false });
   try {
     const collections = [];
     for (const model of [PaymentModel, SubscriptionModel, WebhookEventModel]) {
@@ -23,7 +26,7 @@ async function main(): Promise<void> {
       accountingYearsAfterFinancialYearEnd: 8, razorpayYearsAfterOrder: 10,
       manualExpiryReview: true, financialTtlAbsent: verified, collections }, null, 2));
     if (!verified) process.exitCode = 1;
-  } finally { await disconnectMongo(); }
+  } finally { await mongoose.disconnect(); }
 }
 
 void main().catch(() => { console.error("Financial retention audit could not complete; records and credentials withheld."); process.exitCode = 1; });
