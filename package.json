@@ -11,6 +11,7 @@
     "start": "node dist/server.js",
     "start:worker": "node dist/worker.js",
     "check:billing": "node dist/commands/billing-readiness.js",
+    "check:financial-records": "node dist/commands/financial-records.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --cache false"
   },

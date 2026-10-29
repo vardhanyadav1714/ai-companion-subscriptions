@@ -541,3 +541,38 @@ It returns 503 until its first successful sweep, when MongoDB disconnects, or wh
 the last successful sweep is stale; otherwise it returns 200 with a minimal status.
 Configure the worker's Coolify health check to use `/health` and its runtime port.
 Queue failures/lag and external reporting deadlines still need separate alerts.
+
+## Customer total and financial records
+
+`PLAN_AMOUNT=49900` is the customer's total monthly INR price. Do not add Eva
+convenience fees or tax above this amount. Any confirmed subscription tax is
+split out of the total for reporting. A zero configured tax rate does not establish
+a GST exemption. The operator reports being GST-unregistered in Uttar Pradesh;
+aggregate turnover and overseas service tax treatment still require confirmation.
+Do not assume Google handles GST for an India-based developer.
+
+The operator's policy is recorded in `ops/payment-record-policy.json`: retain
+necessary accounting evidence for eight years after the Indian financial year
+ends, and Razorpay transaction evidence for ten years from the order date, using
+the later deadline. Extend retention for open disputes, tax inquiries and legal
+requirements. Razorpay's ten-year requirement is in its merchant terms, clause
+2.18. Chat and voice data are excluded from financial retention.
+
+Run `npm run check:financial-records` inside the deployed billing container to
+audit financial collections without changing records or printing customer data.
+It fails if a financial collection has a TTL index. Records currently remain in
+the billing database; ordinary account deletion does not erase them. There is no
+automatic financial purge. Review expiry annually after 31 March, check holds
+and continuing purchase-ownership requirements, then delete or anonymize only
+eligible financial data. For example, FY 2026-27 accounting evidence has a policy
+deadline of 31 March 2035; a Razorpay order on 29 October 2026 remains required
+through at least 29 October 2036.
+
+Keep gross sales, fees, applicable taxes, settlements and provider invoices in the
+accounting ledger, reconciling the bank payout separately from revenue. The
+application database does not replace the provider settlement/fee exports.
+Rule 46 of the Income-tax Rules 2026 requires a daily India-located backup for
+covered electronic books. The US-region B2 bucket alone is insufficient if that
+rule applies. Verify the accounting backup location separately before marking
+this requirement complete; routine 30-day service backups are not a long-term
+accounting archive.
