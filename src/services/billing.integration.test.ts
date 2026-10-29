@@ -514,6 +514,25 @@ describe("billing persistence and lifecycle", () => {
     expect(providers.cancel).toHaveBeenCalledTimes(1);
   });
 
+  it("acknowledges stopped renewal in the final Razorpay cycle without a rejected provider cancellation", async () => {
+    const { remote } = await razorpayReceipt();
+    providers.subscription.mockResolvedValue({ ...remote, end_at: remote.current_end, remaining_count: 1 });
+    providers.cancel.mockRejectedValue(new Error("The subscription is in its final cycle and cannot be cancelled now."));
+    expect(await service.cancelSubscription("account-a")).toMatchObject({ active: true, autoRenew: false, cancelAtPeriodEnd: true });
+    expect(await service.cancelSubscription("account-a")).toMatchObject({ active: true, cancelAtPeriodEnd: true });
+    expect(providers.cancel).not.toHaveBeenCalled();
+    expect(await service.syncSubscription({ userId: "account-a" })).toMatchObject({ active: true, autoRenew: false, cancelAtPeriodEnd: true });
+  });
+
+  it("requires provider cancellation when Razorpay still has a later billing cycle", async () => {
+    const { remote } = await razorpayReceipt();
+    providers.subscription.mockResolvedValue({ ...remote, end_at: remote.current_end + 30 * 86400 });
+    providers.cancel.mockRejectedValue(new Error("Provider temporarily unavailable"));
+    await expect(service.cancelSubscription("account-a")).rejects.toThrow("Provider temporarily unavailable");
+    expect(providers.cancel).toHaveBeenCalledTimes(1);
+    expect(await models.SubscriptionModel.findOne({ providerSubscriptionId: remote.id })).toMatchObject({ cancelAtPeriodEnd: false });
+  });
+
   it("revokes a fully refunded current Razorpay cycle and does not restore it during sync", async () => {
     const { remote, payment } = await razorpayReceipt();
     providers.payment.mockResolvedValue({ ...payment, amount_refunded: payment.amount, status: "refunded" });

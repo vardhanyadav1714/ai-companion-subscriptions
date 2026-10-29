@@ -277,7 +277,16 @@ export async function cancelSubscription(userId: string): Promise<Entitlement> {
     if (!subscription?.providerSubscriptionId) throw badRequest("No Razorpay subscription is available to cancel");
     if (subscription.cancelAtPeriodEnd || subscription.status === "cancelled") return entitlement;
     return withRazorpayProfile(storedRazorpayProfile(subscription), async () => {
-    const remote = await cancelRazorpaySubscription(subscription.providerSubscriptionId!);
+    const current = await fetchRazorpaySubscription(subscription.providerSubscriptionId!);
+    // Razorpay rejects cycle-end cancellation during the final billing cycle.
+    // A fresh provider end date within the paid period already guarantees no
+    // later renewal; preserve that period and acknowledge the user's request.
+    const finalCycle = current.status === "active"
+      && typeof current.current_end === "number" && Number.isSafeInteger(current.current_end)
+      && typeof current.end_at === "number" && Number.isSafeInteger(current.end_at)
+      && current.end_at > 0 && current.end_at <= current.current_end
+      && current.current_end * 1000 > Date.now();
+    const remote = finalCycle ? current : await cancelRazorpaySubscription(subscription.providerSubscriptionId!);
     await upsertRazorpaySubscription(userId, remote);
     await SubscriptionModel.updateOne({ _id: subscription._id }, { $set: { cancelAtPeriodEnd: true, autoRenew: false } });
     const updated = await SubscriptionModel.findById(subscription._id);
