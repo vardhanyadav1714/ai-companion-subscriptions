@@ -46,7 +46,7 @@ import { checkoutRazorpayProfile, storedRazorpayProfile, webhookRazorpayProfile,
 export type Entitlement = {
   active: boolean;
   status: SubscriptionStatus | "none";
-  provider: Provider | "none";
+  provider: Provider | "play_review" | "none";
   planId: string;
   freeMessageLimit: number;
   paidDailyMessageLimit: number;
@@ -98,7 +98,7 @@ async function readEntitlement(userId: string, revalidate: boolean): Promise<Ent
   }).sort({ currentEnd: -1 }).lean();
   if (!active) {
     const review = getPlayReviewAccess(userId);
-    if (review) return { ...emptyEntitlement(), ...review, active: true, status: "active" };
+    if (review) return { ...emptyEntitlement(), ...review, active: true, status: "active", provider: "play_review" };
     const grant = await getTestAccess(userId);
     if (grant) return {
       ...emptyEntitlement(), active: true, status: "active", currentEnd: grant.expiresAt.toISOString(),
