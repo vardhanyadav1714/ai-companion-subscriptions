@@ -26,8 +26,16 @@ export function isRazorpayConfigured(): boolean {
 export async function validateRazorpayPlan(): Promise<void> {
   const profile = razorpayProfile();
   if (!profile.planId || !profile.webhookSecret) throw serviceUnavailable("Razorpay plan and webhook must be configured before checkout");
-  const remote = await razorpayRequest<{ id: string; period: string; interval: number; item?: { amount: number; currency: string; active?: boolean } }>("GET", `/plans/${encodeURIComponent(profile.planId)}`);
-  if (remote.id !== profile.planId || remote.period !== env.PLAN_INTERVAL || remote.interval !== 1 || remote.item?.amount !== profile.amount || remote.item?.currency !== profile.currency || remote.item?.active === false) {
+  const remote = await razorpayRequest<{ id: string; period: string; interval: number; item?: {
+    amount: number; currency: string; active?: boolean; gross_amount?: number;
+    tax_inclusive?: boolean; tax_rate?: number | null; tax_id?: string | null; tax_group_id?: string | null;
+  } }>("GET", `/plans/${encodeURIComponent(profile.planId)}`);
+  const item = remote.item;
+  // PLAN_AMOUNT is the customer's total. Reject taxes added above that price.
+  const addsTax = item?.tax_inclusive !== true &&
+    (Number(item?.tax_rate ?? 0) > 0 || Boolean(item?.tax_id || item?.tax_group_id));
+  if (remote.id !== profile.planId || remote.period !== env.PLAN_INTERVAL || remote.interval !== 1 || item?.amount !== profile.amount || item?.currency !== profile.currency || item?.active === false || addsTax ||
+      (item?.gross_amount !== undefined && item.gross_amount !== profile.amount)) {
     throw serviceUnavailable("The payment plan does not match the advertised price. Checkout is unavailable.");
   }
 }

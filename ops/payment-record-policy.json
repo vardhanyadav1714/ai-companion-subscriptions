@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "effectiveDate": "2026-10-29",
+  "operator": "VARDHAN YADAV (Individual)",
+  "businessState": "Uttar Pradesh",
+  "customerPrice": { "amountPaise": 49900, "currency": "INR", "period": "monthly", "includesApplicableSubscriptionTax": true, "evaConvenienceFeePaise": 0 },
+  "gst": { "ownerReportsRegistered": false, "registrationLiabilityConfirmed": false, "turnoverConfirmed": false, "overseasServiceTreatmentConfirmed": false, "zeroRateIsNotAnExemptionDetermination": true },
+  "financialRetention": {
+    "accountingYearsAfterIndianFinancialYearEnd": 8,
+    "razorpayTransactionYearsAfterOrder": 10,
+    "useLaterDeadline": true,
+    "extendForOpenDisputeTaxInquiryOrLegalRequirement": true,
+    "retainOnlyNecessaryFinancialEvidence": true,
+    "retainChatAndVoiceUnderThisPolicy": false,
+    "automaticFinancialDeletionEnabled": false,
+    "expiryAction": "Operator reviews records for deletion or anonymization after all applicable periods and holds end. Preserve valid purchase ownership while its security purpose continues; do not treat purchase tokens as disposable logs.",
+    "reviewFrequency": "Annually after the Indian financial year ends"
+  },
+  "accountingBackups": { "dailyIndiaLocatedCopyVerified": false, "b2UsRegionAloneMeetsIndiaBackupRequirement": false },
+  "sources": [
+    "https://razorpay.com/terms/",
+    "https://www.incometax.gov.in/iec/foportal/sites/default/files/2026-03/En-Notified-IT-Rules-2026-20-03-2026.pdf",
+    "https://support.google.com/paymentscenter/answer/15152449?hl=en-in"
+  ]
+}

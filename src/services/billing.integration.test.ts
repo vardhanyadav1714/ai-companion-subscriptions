@@ -78,6 +78,121 @@ const rtdn = (data: Record<string, unknown>, id = "message-1") => ({
 });
 
 describe("billing persistence and lifecycle", () => {
+  it("grants only the configured review identity without payment records and preserves paid entitlements", async () => {
+    const { env } = await import("../config/env.js");
+    const previous = env.PLAY_REVIEW_USER_ID;
+    const reviewer = "000000000000000000000043";
+    env.PLAY_REVIEW_USER_ID = reviewer;
+    try {
+      const demo = await service.getEntitlement(reviewer);
+      expect(demo).toMatchObject({ active: true, status: "active", provider: "play_review", providerSubscriptionId: "", autoRenew: false });
+      expect(await service.syncSubscription({ userId: reviewer })).toEqual(demo);
+      expect(await service.syncSubscription({ userId: "000000000000000000000044" })).toMatchObject({ active: false, provider: "none" });
+      expect(await service.getEntitlement("000000000000000000000044")).toMatchObject({ active: false });
+      expect(await models.PaymentModel.countDocuments()).toBe(0);
+      expect(await models.SubscriptionModel.countDocuments()).toBe(0);
+      expect(await queue.QueueJobModel.countDocuments()).toBe(0);
+      expect(providers.play).not.toHaveBeenCalled();
+
+      expect(await confirm(reviewer)).toMatchObject({ active: true, provider: "google_play", providerSubscriptionId: token });
+      expect(await service.getEntitlement(reviewer)).toMatchObject({ active: true, provider: "google_play", providerSubscriptionId: token });
+
+      await models.SubscriptionModel.deleteMany({ userId: reviewer });
+      env.PLAY_REVIEW_USER_ID = "";
+      expect(await service.getEntitlement(reviewer)).toMatchObject({ active: false });
+    } finally { env.PLAY_REVIEW_USER_ID = previous; }
+  });
+
+  it.each([undefined, { autoRenewEnabled: false }])("preserves cancelled Play access and exposes stopped renewal when plan metadata is %j", async autoRenewingPlan => {
+    await confirm();
+    const expiryTime = future();
+    providers.play.mockResolvedValue({ ...activePurchase(), subscriptionState: "SUBSCRIPTION_STATE_CANCELED",
+      lineItems: [{ productId: "eva_premium_monthly", offerDetails: { basePlanId: "monthly" }, expiryTime, autoRenewingPlan }] });
+    expect(await confirm()).toMatchObject({ active: true, status: "cancelled", autoRenew: false, cancelAtPeriodEnd: true, currentEnd: expiryTime });
+    expect(await models.SubscriptionModel.findOne({ purchaseToken: token }).lean()).toMatchObject({ cancelAtPeriodEnd: true });
+
+    providers.play.mockResolvedValue(activePurchase());
+    expect(await confirm()).toMatchObject({ active: true, status: "active", autoRenew: true, cancelAtPeriodEnd: false });
+
+    providers.play.mockResolvedValue({ ...activePurchase(), subscriptionState: "SUBSCRIPTION_STATE_EXPIRED",
+      lineItems: [{ productId: "eva_premium_monthly", offerDetails: { basePlanId: "monthly" }, expiryTime: new Date(Date.now() - 1000).toISOString() }] });
+    expect(await confirm()).toMatchObject({ active: false, status: "expired", autoRenew: false, cancelAtPeriodEnd: false });
+  });
+
+  it("refreshes a lapsed cached paid period before returning a free entitlement", async () => {
+    await confirm();
+    await models.SubscriptionModel.updateOne({ purchaseToken: token }, { $set: { currentEnd: new Date(Date.now() - 1000) } });
+    providers.play.mockClear();
+    const expected = future();
+    providers.play.mockResolvedValue({ ...activePurchase(), lineItems: [{ productId: "eva_premium_monthly", offerDetails: { basePlanId: "monthly" }, expiryTime: expected, autoRenewingPlan: { autoRenewEnabled: true } }] });
+    expect(await service.getEntitlement("account-a")).toMatchObject({ active: true, currentEnd: expected });
+    expect(providers.play).toHaveBeenCalledTimes(1);
+  });
+
+  it("queues a near-expiry subscription without waiting fifteen minutes", async () => {
+    await confirm();
+    await models.SubscriptionModel.updateOne({ purchaseToken: token }, { $set: {
+      currentEnd: new Date(Date.now() + 20_000), lastSyncedAt: new Date(Date.now() - 45_000)
+    } });
+    expect(await service.enqueueDueSubscriptionSyncs()).toBe(1);
+    expect(await service.enqueueDueSubscriptionSyncs()).toBe(0);
+    expect(await queue.QueueJobModel.countDocuments({ jobType: "subscription_sync" })).toBe(1);
+  });
+
+  it("does not consume the renewal safeguard for another account or a revoked purchase", async () => {
+    await confirm();
+    await models.SubscriptionModel.updateOne({ purchaseToken: token }, { $set: { status: "revoked", active: false, currentEnd: new Date(Date.now() - 1000) } });
+    providers.play.mockClear();
+    expect(await service.getEntitlement("account-a")).toMatchObject({ active: false, status: "revoked" });
+    expect(await service.getEntitlement("account-b")).toMatchObject({ active: false, provider: "none" });
+    expect(providers.play).not.toHaveBeenCalled();
+  });
+
+  it("does not poll a long-expired cached period every thirty seconds", async () => {
+    await confirm();
+    await models.SubscriptionModel.updateOne({ purchaseToken: token }, { $set: {
+      currentEnd: new Date(Date.now() - 10 * 60_000), lastSyncedAt: new Date(Date.now() - 45_000)
+    } });
+    expect(await service.enqueueDueSubscriptionSyncs()).toBe(0);
+  });
+
+  it("revalidates Razorpay renewals at the paid-period boundary", async () => {
+    await models.SubscriptionModel.create({ userId: "account-a", provider: "razorpay", providerSubscriptionId: "sub_boundary",
+      productId: "plan_test", planId: "premium", status: "active", active: true, currentEnd: new Date(Date.now() - 1000) });
+    providers.subscription.mockResolvedValue({ id: "sub_boundary", plan_id: "plan_test", status: "active",
+      current_end: Math.floor(Date.now() / 1000) + 86400, notes: { userId: "account-a" } });
+    expect(await service.getEntitlement("account-a")).toMatchObject({ active: true, provider: "razorpay" });
+    expect(providers.subscription).toHaveBeenCalledWith("sub_boundary");
+  });
+
+  it("fails temporarily rather than downgrading a paid account during a provider outage", async () => {
+    await confirm();
+    await models.SubscriptionModel.updateOne({ purchaseToken: token }, { $set: { currentEnd: new Date(Date.now() - 1000) } });
+    providers.play.mockClear().mockRejectedValue(new Error("provider unavailable"));
+    await expect(service.getEntitlement("account-a")).rejects.toMatchObject({ statusCode: 503 });
+    await expect(service.getEntitlement("account-a")).rejects.toMatchObject({ statusCode: 503 });
+    expect(providers.play).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an unexpired verified paid period usable if its boundary check fails", async () => {
+    await confirm();
+    await models.SubscriptionModel.updateOne({ purchaseToken: token }, { $set: { currentEnd: new Date(Date.now() + 45_000) } });
+    providers.play.mockRejectedValue(new Error("provider unavailable"));
+    expect(await service.getEntitlement("account-a")).toMatchObject({ active: true });
+  });
+
+  it("shares concurrent boundary checks and accepts an authoritative expiry", async () => {
+    await confirm();
+    await models.SubscriptionModel.updateOne({ purchaseToken: token }, { $set: { currentEnd: new Date(Date.now() - 1000) } });
+    providers.play.mockClear().mockImplementation(async () => {
+      await new Promise(resolve => setTimeout(resolve, 30));
+      return { ...activePurchase(), subscriptionState: "SUBSCRIPTION_STATE_EXPIRED", lineItems: [{ productId: "eva_premium_monthly", offerDetails: { basePlanId: "monthly" }, expiryTime: new Date(Date.now() - 1000).toISOString() }] };
+    });
+    const results = await Promise.all([service.getEntitlement("account-a"), service.getEntitlement("account-a")]);
+    expect(results.every(result => !result.active && result.status === "expired")).toBe(true);
+    expect(providers.play).toHaveBeenCalledTimes(1);
+  });
+
   async function migratedMerchant(action: () => Promise<void>) {
     const { env } = await import("../config/env.js");
     const saved = { ...env };
@@ -397,6 +512,25 @@ describe("billing persistence and lifecycle", () => {
     await expect(service.cancelSubscription("account-a")).resolves.toMatchObject({ active: true, autoRenew: false, cancelAtPeriodEnd: true });
     await service.cancelSubscription("account-a");
     expect(providers.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("acknowledges stopped renewal in the final Razorpay cycle without a rejected provider cancellation", async () => {
+    const { remote } = await razorpayReceipt();
+    providers.subscription.mockResolvedValue({ ...remote, end_at: remote.current_end, remaining_count: 1 });
+    providers.cancel.mockRejectedValue(new Error("The subscription is in its final cycle and cannot be cancelled now."));
+    expect(await service.cancelSubscription("account-a")).toMatchObject({ active: true, autoRenew: false, cancelAtPeriodEnd: true });
+    expect(await service.cancelSubscription("account-a")).toMatchObject({ active: true, cancelAtPeriodEnd: true });
+    expect(providers.cancel).not.toHaveBeenCalled();
+    expect(await service.syncSubscription({ userId: "account-a" })).toMatchObject({ active: true, autoRenew: false, cancelAtPeriodEnd: true });
+  });
+
+  it("requires provider cancellation when Razorpay still has a later billing cycle", async () => {
+    const { remote } = await razorpayReceipt();
+    providers.subscription.mockResolvedValue({ ...remote, end_at: remote.current_end + 30 * 86400 });
+    providers.cancel.mockRejectedValue(new Error("Provider temporarily unavailable"));
+    await expect(service.cancelSubscription("account-a")).rejects.toThrow("Provider temporarily unavailable");
+    expect(providers.cancel).toHaveBeenCalledTimes(1);
+    expect(await models.SubscriptionModel.findOne({ providerSubscriptionId: remote.id })).toMatchObject({ cancelAtPeriodEnd: false });
   });
 
   it("revokes a fully refunded current Razorpay cycle and does not restore it during sync", async () => {

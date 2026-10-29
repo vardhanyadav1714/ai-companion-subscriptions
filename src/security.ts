@@ -6,6 +6,11 @@ import { env } from "./config/env.js";
 import { unauthorized } from "./errors.js";
 
 export function requireInternalKey(request: FastifyRequest): void {
+  if (hasInternalKey(request)) return;
+  throw unauthorized("Invalid subscriptions API key");
+}
+
+export function hasInternalKey(request: FastifyRequest): boolean {
   const expected = env.SUBSCRIPTIONS_API_KEY.trim();
   const headerKey = String(request.headers["x-subscriptions-key"] ?? "").trim();
   const authorization = String(request.headers.authorization ?? "").trim();
@@ -13,8 +18,7 @@ export function requireInternalKey(request: FastifyRequest): void {
     ? authorization.slice("bearer ".length).trim()
     : "";
 
-  if (matchesSecret(headerKey, expected) || matchesSecret(bearer, expected)) return;
-  throw unauthorized("Invalid subscriptions API key");
+  return matchesSecret(headerKey, expected) || matchesSecret(bearer, expected);
 }
 
 function matchesSecret(actual: string, expected: string): boolean {

@@ -20,6 +20,10 @@ describe("checkout plan validation", () => {
     { ...plan, period: "yearly" },
     { ...plan, item: { ...plan.item, currency: "USD" } },
     { ...plan, item: { ...plan.item, active: false } },
+    { ...plan, item: { ...plan.item, tax_rate: 18, tax_inclusive: false } },
+    { ...plan, item: { ...plan.item, tax_id: "tax_extra" } },
+    { ...plan, item: { ...plan.item, tax_group_id: "tax_group_extra", tax_inclusive: false } },
+    { ...plan, item: { ...plan.item, gross_amount: 58882 } },
     { ...plan, id: "plan_wrong" },
     {}
   ])("rejects mismatched or malformed plans", async remote => {
@@ -29,6 +33,12 @@ describe("checkout plan validation", () => {
   it("fails closed when Razorpay is unavailable", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Unavailable")));
     await expect(validateRazorpayPlan()).rejects.toThrow();
+  });
+  it("accepts tax already included in the same customer total", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ...plan, item: { ...plan.item, tax_rate: 18, tax_inclusive: true, gross_amount: 49900 }
+    }))));
+    await expect(validateRazorpayPlan()).resolves.toBeUndefined();
   });
   it("uses the earliest paid full-price invoice and ignores authorization-only amounts", async () => {
     const fetch = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ items: [

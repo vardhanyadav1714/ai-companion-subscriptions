@@ -6,7 +6,7 @@ const notificationSchema = z.object({
   packageName: z.string(),
   subscriptionNotification: z.object({ purchaseToken: z.string().min(1), notificationType: z.number().int() }).optional(),
   voidedPurchaseNotification: z.object({ purchaseToken: z.string().min(1), orderId: z.string().min(1), productType: z.number().int(), refundType: z.number().int().optional() }).optional(),
-  testNotification: z.record(z.unknown()).optional()
+  testNotification: z.record(z.string(), z.unknown()).optional()
 });
 
 export function decodePlayNotification(payload: Record<string, unknown>) {

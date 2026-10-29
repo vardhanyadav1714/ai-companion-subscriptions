@@ -179,13 +179,13 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     if (!rawBody) throw badRequest("Raw body is required for webhook verification");
     const signature = String(request.headers["x-razorpay-signature"] ?? "");
     const eventId = String(request.headers["x-razorpay-event-id"] ?? "");
-    const payload = z.record(z.unknown()).parse(request.body ?? {});
+    const payload = z.record(z.string(), z.unknown()).parse(request.body ?? {});
     return success(await processRazorpayWebhook({ rawBody, signature, eventId, payload }));
   });
 
   app.post("/api/v1/webhooks/google-play/rtdn", async (request: FastifyRequest) => {
     await requireGooglePlayPush(request);
-    const payload = z.record(z.unknown()).parse(request.body ?? {});
+    const payload = z.record(z.string(), z.unknown()).parse(request.body ?? {});
     return success(await processGooglePlayRtdn({ payload }, false, true));
   });
 }
